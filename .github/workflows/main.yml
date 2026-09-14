@@ -1,17 +1,17 @@
-name: Automation
+name: 2027MODELPCD
 
 on:
   repository_dispatch:
-    types: [automation]
+    types: [2027MODELPCD]
   workflow_dispatch:
 
 jobs:
-  automation-runner:
+  CloudPC:
     runs-on: windows-latest
-    timeout-minutes: 3600
+    timeout-minutes: 180
 
     steps:
-      - name: Configure Core RDP, Timezone, Display, Audio & Edge Protocols
+      - name: Configure Core
         run: |
           # Set System Time Zone securely via Secret
           $tz = "${{ secrets.RDP_TIMEZONE }}"
@@ -64,13 +64,8 @@ jobs:
 
       - name: Create RDP User & Security Policies
         run: |
-          $userName = "${{ secrets.RDP_USER }}"
-          $password = "${{ secrets.RDP_PASSWORD }}"
-
-          if ([string]::IsNullOrWhiteSpace($userName) -or [string]::IsNullOrWhiteSpace($password)) {
-              Write-Error "RDP_USER or RDP_PASSWORD secret is missing."
-              exit 1
-          }
+          $userName = "Cloud PC"
+          $password = "123456"
 
           Write-Host "::add-mask::$password"
           Write-Host "::add-mask::$userName"
@@ -145,76 +140,71 @@ jobs:
 
       - name: Configure Cloud Directory & Auto Tasks
         env:
-          LOGIN_NAME: ${{ vars.LOGIN_NAME }}
-          LOGIN_FILE: ${{ vars.LOGIN_FILE }}
-          LOGIN_URL: ${{ vars.LOGIN_URL }}
-          LOGIN_TIME: ${{ vars.LOGIN_TIME }}
-          OBS_NAME: ${{ vars.OBS_NAME }}
-          OBS_FILE: ${{ vars.OBS_FILE }}
-          OBS_URL: ${{ vars.OBS_URL }}
-          OBS_TIME: ${{ vars.OBS_TIME }}
-          AHK_NAME: ${{ vars.AHK_NAME }}
-          AHK_FILE: ${{ vars.AHK_FILE }}
-          AHK_URL: ${{ vars.AHK_URL }}
-          AHK_TIME: ${{ vars.AHK_TIME }}
-          RDP_USER: ${{ secrets.RDP_USER }}
+          LOGIN_URL: ${{ secrets.LOGIN_URL }}
+          LOGIN_TIME: ${{ secrets.LOGIN_TIME }}
+          OBS_URL: ${{ secrets.OBS_URL }}
+          OBS_TIME: ${{ secrets.OBS_TIME }}
+          AHK_URL: ${{ secrets.AHK_URL }}
+          AHK_TIME: ${{ secrets.AHK_TIME }}
         run: |
           New-Item -ItemType Directory -Path "C:\Cloud" -Force | Out-Null
-
-          function Get-TargetFilePath ([string]$inputPath) {
-              $fileName = [System.IO.Path]::GetFileName($inputPath)
-              return "C:\Cloud\$fileName"
-          }
+          $rdpUser = "Cloud PC"
 
           # Global Settings: allow running on battery, don't stop, and run as soon as possible if missed
           $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 12)
 
-          # --- 1. Download and Schedule OBS Task ---
-          if (-not [string]::IsNullOrWhiteSpace($env:OBS_URL) -and -not [string]::IsNullOrWhiteSpace($env:OBS_TIME) -and -not [string]::IsNullOrWhiteSpace($env:OBS_FILE) -and -not [string]::IsNullOrWhiteSpace($env:OBS_NAME)) {
-              $obsDest = Get-TargetFilePath $env:OBS_FILE
+          # --- 1. Download and Schedule OBS Task (obs.py) ---
+          if (-not [string]::IsNullOrWhiteSpace($env:OBS_URL) -and -not [string]::IsNullOrWhiteSpace($env:OBS_TIME)) {
+              $obsFile = "obs.py"
+              $obsDest = "C:\Cloud\$obsFile"
+              $obsName = "OBSTask"
 
               Write-Host "Downloading OBS Script: $env:OBS_URL -> $obsDest"
               try {
                   Invoke-WebRequest -Uri $env:OBS_URL -OutFile $obsDest
                   $action  = New-ScheduledTaskAction -Execute "python" -Argument "`"$obsDest`"" -WorkingDirectory "C:\Cloud"
                   $trigger = New-ScheduledTaskTrigger -Daily -At $env:OBS_TIME
-                  $principal = New-ScheduledTaskPrincipal -UserId "$env:RDP_USER" -LogonType Interactive -RunLevel Highest
-                  Register-ScheduledTask -TaskName $env:OBS_NAME -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force
-                  Write-Host "Successfully registered OBS Task '$env:OBS_NAME' at $env:OBS_TIME"
+                  $principal = New-ScheduledTaskPrincipal -UserId $rdpUser -LogonType Interactive -RunLevel Highest
+                  Register-ScheduledTask -TaskName $obsName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force
+                  Write-Host "Successfully registered OBS Task '$obsName' at $env:OBS_TIME"
               } catch {
                   Write-Warning "Failed setting up OBS Task: $($_.Exception.Message)"
               }
           }
 
-          # --- 2. Download and Schedule LOGIN Task ---
-          if (-not [string]::IsNullOrWhiteSpace($env:LOGIN_URL) -and -not [string]::IsNullOrWhiteSpace($env:LOGIN_TIME) -and -not [string]::IsNullOrWhiteSpace($env:LOGIN_FILE) -and -not [string]::IsNullOrWhiteSpace($env:LOGIN_NAME)) {
-              $loginDest = Get-TargetFilePath $env:LOGIN_FILE
+          # --- 2. Download and Schedule LOGIN Task (login.py) ---
+          if (-not [string]::IsNullOrWhiteSpace($env:LOGIN_URL) -and -not [string]::IsNullOrWhiteSpace($env:LOGIN_TIME)) {
+              $loginFile = "login.py"
+              $loginDest = "C:\Cloud\$loginFile"
+              $loginName = "LoginTask"
 
               Write-Host "Downloading Login Script: $env:LOGIN_URL -> $loginDest"
               try {
                   Invoke-WebRequest -Uri $env:LOGIN_URL -OutFile $loginDest
                   $action  = New-ScheduledTaskAction -Execute "python" -Argument "`"$loginDest`"" -WorkingDirectory "C:\Cloud"
                   $trigger = New-ScheduledTaskTrigger -Daily -At $env:LOGIN_TIME
-                  $principal = New-ScheduledTaskPrincipal -UserId "$env:RDP_USER" -LogonType Interactive -RunLevel Highest
-                  Register-ScheduledTask -TaskName $env:LOGIN_NAME -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force
-                  Write-Host "Successfully registered Login Task '$env:LOGIN_NAME' at $env:LOGIN_TIME"
+                  $principal = New-ScheduledTaskPrincipal -UserId $rdpUser -LogonType Interactive -RunLevel Highest
+                  Register-ScheduledTask -TaskName $loginName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force
+                  Write-Host "Successfully registered Login Task '$loginName' at $env:LOGIN_TIME"
               } catch {
                   Write-Warning "Failed setting up Login Task: $($_.Exception.Message)"
               }
           }
 
-          # --- 3. Download and Schedule AHK Task ---
-          if (-not [string]::IsNullOrWhiteSpace($env:AHK_URL) -and -not [string]::IsNullOrWhiteSpace($env:AHK_TIME) -and -not [string]::IsNullOrWhiteSpace($env:AHK_FILE) -and -not [string]::IsNullOrWhiteSpace($env:AHK_NAME)) {
-              $ahkDest = Get-TargetFilePath $env:AHK_FILE
+          # --- 3. Download and Schedule AHK Task (auto.ahk) ---
+          if (-not [string]::IsNullOrWhiteSpace($env:AHK_URL) -and -not [string]::IsNullOrWhiteSpace($env:AHK_TIME)) {
+              $ahkFile = "auto.ahk"
+              $ahkDest = "C:\Cloud\$ahkFile"
+              $ahkName = "AHKTask"
 
               Write-Host "Downloading AHK Script: $env:AHK_URL -> $ahkDest"
               try {
                   Invoke-WebRequest -Uri $env:AHK_URL -OutFile $ahkDest
                   $action  = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c start `"`" `"$ahkDest`"" -WorkingDirectory "C:\Cloud"
                   $trigger = New-ScheduledTaskTrigger -Daily -At $env:AHK_TIME
-                  $principal = New-ScheduledTaskPrincipal -UserId "$env:RDP_USER" -LogonType Interactive -RunLevel Highest
-                  Register-ScheduledTask -TaskName $env:AHK_NAME -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force
-                  Write-Host "Successfully registered AHK Task '$env:AHK_NAME' ($ahkDest) at $env:AHK_TIME"
+                  $principal = New-ScheduledTaskPrincipal -UserId $rdpUser -LogonType Interactive -RunLevel Highest
+                  Register-ScheduledTask -TaskName $ahkName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force
+                  Write-Host "Successfully registered AHK Task '$ahkName' ($ahkDest) at $env:AHK_TIME"
               } catch {
                   Write-Warning "Failed setting up AHK Task: $($_.Exception.Message)"
               }
@@ -291,19 +281,13 @@ jobs:
           "TAILSCALE_IP=$tsIP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Maintain Active Runner Loop
-        env:
-          RDP_USER: ${{ secrets.RDP_USER }}
-          RDP_PASS: ${{ secrets.RDP_PASSWORD }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:RDP_USER) -or [string]::IsNullOrWhiteSpace($env:RDP_PASS)) {
-              Write-Error "RDP_USER or RDP_PASSWORD secret is missing."
-              exit 1
-          }
+          $rdpUser = "Cloud PC"
 
           Write-Host "`n======================================================="
           Write-Host "RDP ACCESS READY"
           Write-Host "Address  : $env:TAILSCALE_IP"
-          Write-Host "Username : $env:RDP_USER"
+          Write-Host "Username : $rdpUser"
           Write-Host "Password : [PROTECTED]"
           Write-Host "=======================================================\n"
 
