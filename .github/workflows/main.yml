@@ -140,38 +140,74 @@ jobs:
               reg unload "HKU\TEMPUSER" 2>$null | Out-Null
           }
 
-      - name: Install Virtual Display Driver
+      - name: Install Virtual Display Driver (optional)
+        continue-on-error: true
         run: |
-          # --- Install Virtual Display Driver ---
+          $ErrorActionPreference = 'Continue'
+          $ProgressPreference    = 'SilentlyContinue'
+
           $driverZip = "$env:TEMP\usbmmidd.zip"
           $driverDir = "C:\VirtualDisplay"
           New-Item -ItemType Directory -Path $driverDir -Force | Out-Null
+          Remove-Item $driverZip -Force -ErrorAction SilentlyContinue
 
+          # Multiple mirrors (first one is a working GitHub raw URL)
           $urls = @(
-              "https://raw.githubusercontent.com/roshkins/IddSampleDriver/main/usbmmidd_v2.zip",
+              "https://github.com/roshkins/IddSampleDriver/raw/main/usbmmidd_v2.zip",
+              "https://github.com/itsmikethetech/Virtual-Display-Driver/releases/download/v23.10.24/usbmmidd_v2.zip",
               "https://www.amyuni.com/downloads/usbmmidd_v2.zip"
           )
 
+          $downloaded = $false
           foreach ($url in $urls) {
               try {
+                  Write-Host "Trying $url ..."
                   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-                  curl.exe -sSL "$url" -o "$driverZip"
-                  if ((Test-Path $driverZip) -and (Get-Item $driverZip).Length -gt 1000) { break }
-              } catch {}
-          }
-
-          if (Test-Path $driverZip) {
-              Expand-Archive -Path $driverZip -DestinationPath $driverDir -Force
-              $installer = Get-ChildItem -Path $driverDir -Recurse -Filter "deviceinstaller64.exe" | Select-Object -First 1
-              if ($installer) {
-                  Set-Location $installer.DirectoryName
-                  & .\deviceinstaller64.exe install usbmmidd.inf usbmmidd
-                  & .\deviceinstaller64.exe enableidd 1
+                  Invoke-WebRequest -Uri $url -OutFile $driverZip -TimeoutSec 45 -UseBasicParsing
+                  if ((Test-Path $driverZip) -and (Get-Item $driverZip).Length -gt 100000) {
+                      $downloaded = $true
+                      Write-Host "Downloaded from $url ($((Get-Item $driverZip).Length) bytes)"
+                      break
+                  }
+              } catch {
+                  Write-Warning "Failed $url : $($_.Exception.Message)"
               }
           }
 
-          # Give the virtual display a moment to come online
-          Start-Sleep -Seconds 5
+          if (-not $downloaded) {
+              Write-Warning "Virtual display driver unavailable — RDP session will still provide a display. Skipping."
+              exit 0
+          }
+
+          # Extract with explicit error handling
+          try {
+              Expand-Archive -Path $driverZip -DestinationPath $driverDir -Force -ErrorAction Stop
+          } catch {
+              Write-Warning "Extraction failed: $($_.Exception.Message) — skipping."
+              exit 0
+          }
+
+          $installer = Get-ChildItem -Path $driverDir -Recurse -Filter "deviceinstaller64.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $installer) {
+              Write-Warning "deviceinstaller64.exe not found in archive — skipping."
+              exit 0
+          }
+
+          Set-Location $installer.DirectoryName
+
+          # Run installer; ignore exit codes so it never kills the job
+          & .\deviceinstaller64.exe install usbmmidd.inf usbmmidd 2>&1 | Out-Host
+          $rc1 = $LASTEXITCODE
+          & .\deviceinstaller64.exe enableidd 1 2>&1 | Out-Host
+          $rc2 = $LASTEXITCODE
+
+          if ($rc1 -eq 0 -and $rc2 -eq 0) {
+              Write-Host "Virtual Display Driver installed and enabled."
+          } else {
+              Write-Warning "Driver install returned codes install=$rc1 enable=$rc2 (non-fatal)."
+          }
+
+          Start-Sleep -Seconds 3
 
       - name: Install Software (OBS, Zoom, AutoHotkey & Python Packages)
         run: |
