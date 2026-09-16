@@ -5,9 +5,15 @@ on:
     types: [RDP]
   workflow_dispatch:
     inputs:
-      ip:        { required: true }
-      username:  { required: false }
-      password:  { required: false }
+      ip:
+        description: 'Target Tailscale IP'
+        required: true
+      username:
+        description: 'Target Windows Username'
+        required: false
+      password:
+        description: 'Target Windows Password'
+        required: false
 
 jobs:
   RDP:
@@ -23,7 +29,7 @@ jobs:
           sudo apt-get install -y \
             tailscale xvfb freerdp2-x11 \
             pulseaudio alsa-utils libasound2-plugins \
-            xdotool openbox x11-utils wmctrl netcat-openbsd
+            xdotool openbox x11-utils netcat-openbsd
 
       - name: Authenticate Tailscale
         run: |
@@ -33,54 +39,63 @@ jobs:
           sleep 3
           tailscale status || true
 
-      - name: Resolve Credentials
+      - name: Resolve IP & Credentials
         run: |
           TARGET_IP="${{ github.event.client_payload.ip || inputs.ip }}"
-          TARGET_USER="${{ github.event.client_payload.username || inputs.username || 'Cloud PC' }}"
-          TARGET_PASS="${{ github.event.client_payload.password || inputs.password || '123456' }}"
-          [ -z "$TARGET_IP" ] && { echo "::error::no IP"; exit 1; }
+          TARGET_USER="${{ github.event.client_payload.username || inputs.username || secrets.RDP_USER || 'Cloud PC' }}"
+          TARGET_PASS="${{ github.event.client_payload.password || inputs.password || secrets.RDP_PASSWORD || '123456' }}"
+
+          if [ -z "$TARGET_IP" ]; then
+            echo "::error::TARGET_IP is empty"
+            exit 1
+          fi
 
           echo "TARGET_IP=$TARGET_IP"     >> $GITHUB_ENV
           echo "TARGET_USER=$TARGET_USER" >> $GITHUB_ENV
           echo "TARGET_PASS=$TARGET_PASS" >> $GITHUB_ENV
+
           echo "::add-mask::$TARGET_PASS"
           echo "::add-mask::$TARGET_USER"
+          echo "Resolved target: $TARGET_IP"
 
       - name: Wait for host
         run: |
-          for i in $(seq 1 60); do
+          echo "Waiting for $TARGET_IP ..."
+          for i in $(seq 1 40); do
             if ping -c 1 -W 2 "$TARGET_IP" >/dev/null 2>&1 && nc -z -w 2 "$TARGET_IP" 3389 2>/dev/null; then
-              echo "RDP port open on attempt $i"; exit 0
+              echo "TCP 3389 open on attempt $i"
+              exit 0
             fi
             sleep 2
           done
-          echo "::error::Host unreachable"; exit 1
+          echo "::error::Host $TARGET_IP:3389 not reachable"
+          exit 1
 
-      - name: Run RDP Session (persistent, with auto-reconnect)
-        timeout-minutes: 345
+      - name: Run RDP Session
         run: |
           set +e
 
-          # ---------- 1. Virtual display ----------
+          # 1. Virtual display (1920x1080 to match login.py coordinates)
           Xvfb :99 -screen 0 1920x1080x24 -ac +extension RANDR &
           XVFB_PID=$!
           export DISPLAY=:99
           sleep 3
-          xdpyinfo -display :99 >/dev/null 2>&1 || { echo "::error::Xvfb failed"; exit 1; }
 
-          # ---------- 2. Window manager ----------
+          if ! xdpyinfo -display :99 >/dev/null 2>&1; then
+            echo "::error::Xvfb failed to start"
+            exit 1
+          fi
+
+          # 2. Window manager
           openbox --sm-disable &
           WM_PID=$!
           sleep 2
 
-          # ---------- 3. Audio ----------
+          # 3. Audio
           pulseaudio --start --exit-idle-time=-1 >/dev/null 2>&1
+          sleep 1
 
-          # ---------- 4. Keep-alive with WINDOW FOCUS ----------
-          #    This is the critical difference from before:
-          #    every tick, it finds the FreeRDP window, focuses it, then
-          #    sends a mouse wiggle + harmless key. Without the focus step
-          #    the keystrokes go nowhere and Windows disconnects the session.
+          # 4. Keep-alive with window focus
           (
             while true; do
               sleep 20
@@ -97,40 +112,36 @@ jobs:
           KEEP_PID=$!
 
           cleanup() {
-            echo "[$(date)] cleanup..."
+            echo "[$(date)] Cleaning up..."
             kill $KEEP_PID $WM_PID $XVFB_PID >/dev/null 2>&1
           }
           trap cleanup EXIT
 
-          # ---------- 5. Persistent FreeRDP loop with retry ----------
-          ATTEMPT=0
-          while true; do
-            ATTEMPT=$((ATTEMPT+1))
-            echo "=========================================="
-            echo "[$(date)] xfreerdp attempt #$ATTEMPT -> $TARGET_IP"
-            echo "=========================================="
+          echo "=========================================="
+          echo "[$(date)] xfreerdp -> $TARGET_IP"
+          echo "=========================================="
 
-            xfreerdp \
-              /v:"$TARGET_IP" \
-              /u:"$TARGET_USER" \
-              /p:"$TARGET_PASS" \
-              /size:1920x1080 \
-              /bpp:32 \
-              /gdi:hw \
-              /rfx \
-              /cert-ignore \
-              +clipboard \
-              /dynamic-resolution \
-              /network:LAN \
-              /sound:sys:pulse \
-              /audio-mode:0 \
-              /log-level:INFO \
-              +async-update \
-              +fonts \
-              +aero \
-              /timeout:60000
+          # 5. Single session — no loop, no auto-reconnect
+          xfreerdp \
+            /v:"$TARGET_IP" \
+            /u:"$TARGET_USER" \
+            /p:"$TARGET_PASS" \
+            /size:1920x1080 \
+            /bpp:32 \
+            /gdi:hw \
+            /rfx \
+            /cert-ignore \
+            +clipboard \
+            /dynamic-resolution \
+            /network:LAN \
+            /sound:sys:pulse \
+            /audio-mode:0 \
+            /log-level:INFO \
+            +async-update \
+            +fonts \
+            +aero || true
 
-            RC=$?
-            echo "[$(date)] xfreerdp exited (rc=$RC) — retry in 5s"
-            sleep 5
-          done
+          RC=$?
+          echo "[$(date)] xfreerdp exited with code $RC"
+          echo "Cleaning up and finishing job..."
+          exit 0
