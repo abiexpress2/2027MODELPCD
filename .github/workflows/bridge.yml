@@ -30,7 +30,7 @@ jobs:
           sudo apt-get install -y \
             tailscale xvfb freerdp2-x11 \
             pulseaudio alsa-utils libasound2-plugins \
-            xdotool openbox x11-utils
+            xdotool openbox x11-utils netcat-openbsd
 
       - name: Authenticate Tailscale
         run: |
@@ -60,17 +60,19 @@ jobs:
           echo "::add-mask::$TARGET_USER"
           echo "Resolved target: $TARGET_IP"
 
-      - name: Ping Windows host before starting
+      - name: Wait for host + RDP port to be reachable
         run: |
-          echo "Pinging $TARGET_IP ..."
-          for i in $(seq 1 30); do
+          echo "Waiting for $TARGET_IP ..."
+          for i in $(seq 1 40); do
             if ping -c 1 -W 2 "$TARGET_IP" >/dev/null 2>&1; then
-              echo "Host reachable on attempt $i"
-              exit 0
+              if nc -z -w 2 "$TARGET_IP" 3389 2>/dev/null; then
+                echo "TCP 3389 open on attempt $i"
+                exit 0
+              fi
             fi
             sleep 2
           done
-          echo "::error::Host $TARGET_IP not reachable via Tailscale"
+          echo "::error::Host $TARGET_IP:3389 not reachable"
           exit 1
 
       - name: Run RDP Session (finish on disconnect)
@@ -97,16 +99,19 @@ jobs:
           pulseaudio --start --exit-idle-time=-1 >/dev/null 2>&1
           sleep 1
 
-          # 4. Background keep-alive — sends a harmless key every 25 s
+          # 4. Background keep-alive — moves the mouse inside the Xvfb
+          #    (a bare xdotool key alone doesn't register as mouse activity,
+          #    and Windows' RDP idle timer only looks at mouse+keyboard together)
           (
             while true; do
               sleep 25
               xdotool key --clearmodifiers F15 >/dev/null 2>&1
+              xdotool mousemove_relative -- 1 0 >/dev/null 2>&1
+              xdotool mousemove_relative -- -1 0 >/dev/null 2>&1
             done
           ) &
           KEEP_PID=$!
 
-          # Cleanup on exit
           cleanup() {
             echo "[$(date)] Cleaning up background processes..."
             kill $KEEP_PID $WM_PID $XVFB_PID >/dev/null 2>&1
@@ -117,7 +122,8 @@ jobs:
           echo "[$(date)] Starting RDP session -> $TARGET_IP"
           echo "==========================================================="
 
-          # 5. Single FreeRDP session — when it disconnects, we move on
+          # 5. Single FreeRDP session — NO /admin, NO /cert-ignore only path
+          #    Removing /admin is THE fix — it forces a fresh interactive session.
           xfreerdp \
             /v:"$TARGET_IP" \
             /u:"$TARGET_USER" \
@@ -126,9 +132,7 @@ jobs:
             /bpp:32 \
             /gdi:hw \
             /rfx \
-            /admin \
             /cert-ignore \
-            /cert:ignore \
             +clipboard \
             /dynamic-resolution \
             /network:LAN \
