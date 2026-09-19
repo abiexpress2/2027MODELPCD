@@ -220,6 +220,37 @@ jobs:
           python -m pip install --upgrade pip
           pip install pynput pyautogui pygetwindow
 
+      - name: Download & Configure OBS Scenes & Profiles
+        env:
+          OBS_JSON_URL: ${{ secrets.OBS_JSON_URL }}
+        run: |
+          # Use secret if set, otherwise fallback to default URL
+          $url = if (-not [string]::IsNullOrWhiteSpace($env:OBS_JSON_URL)) {$env:OBS_JSON_URL } else { "https://binarykalviuploder.web.app/OBS/obs.json" }
+
+          Write-Host "Fetching OBS configuration from: $url"
+          $data = (Invoke-WebRequest -Uri$url).Content | ConvertFrom-Json
+
+          # Target both system profile and Cloud PC user profile
+          $targetUsers = @("Cloud PC", $env:USERNAME)
+
+          foreach ($user in $targetUsers) {$scenesPath = "C:\Users\$user\AppData\Roaming\obs-studio\basic\scenes"
+              $profilesPath = "C:\Users\$user\AppData\Roaming\obs-studio\basic\profiles\Untitled"
+
+              New-Item -ItemType Directory -Force -Path $scenesPath | Out-Null
+              New-Item -ItemType Directory -Force -Path $profilesPath | Out-Null
+
+              foreach ($fileUrl in$data.scenes) {
+                  $fileName = Split-Path ([uri]$fileUrl).AbsolutePath -Leaf
+                  Invoke-WebRequest -Uri $fileUrl -OutFile (Join-Path -Path $scenesPath -ChildPath$fileName)
+              }
+
+              foreach ($fileUrl in$data.profiles) {
+                  $fileName = Split-Path ([uri]$fileUrl).AbsolutePath -Leaf
+                  Invoke-WebRequest -Uri $fileUrl -OutFile (Join-Path -Path $profilesPath -ChildPath$fileName)
+              }
+          }
+          Write-Host "Successfully applied OBS scenes and profiles."
+
       - name: Configure Cloud Directory & Auto Tasks
         env:
           LOGIN_URL:  ${{ secrets.LOGIN_URL }}
