@@ -45,10 +45,6 @@ jobs:
           TARGET_USER="${{ github.event.client_payload.username || inputs.username || secrets.RDP_USER || 'Cloud PC' }}"
           TARGET_PASS="${{ github.event.client_payload.password || inputs.password || secrets.RDP_PASSWORD || '123456' }}"
 
-          # Mask sensitive credentials immediately before writing or logging
-          echo "::add-mask::$TARGET_USER"
-          echo "::add-mask::$TARGET_PASS"
-
           if [ -z "$TARGET_IP" ]; then
             echo "::error::TARGET_IP is empty"
             exit 1
@@ -58,6 +54,8 @@ jobs:
           echo "TARGET_USER=$TARGET_USER" >> $GITHUB_ENV
           echo "TARGET_PASS=$TARGET_PASS" >> $GITHUB_ENV
 
+          echo "::add-mask::$TARGET_PASS"
+          echo "::add-mask::$TARGET_USER"
           echo "Resolved target: $TARGET_IP"
 
       - name: Wait for host
@@ -77,7 +75,7 @@ jobs:
         run: |
           set +e
 
-          # 1. Virtual display (1920x1080)
+          # 1. Virtual display (1920x1080 to match login.py coordinates)
           Xvfb :99 -screen 0 1920x1080x24 -ac +extension RANDR &
           XVFB_PID=$!
           export DISPLAY=:99
@@ -93,11 +91,11 @@ jobs:
           WM_PID=$!
           sleep 2
 
-          # 3. Audio engine
+          # 3. Audio
           pulseaudio --start --exit-idle-time=-1 >/dev/null 2>&1
           sleep 1
 
-          # 4. Anti-idle / Keep-alive with window focus
+          # 4. Keep-alive with window focus
           (
             while true; do
               sleep 20
@@ -114,7 +112,7 @@ jobs:
           KEEP_PID=$!
 
           cleanup() {
-            echo "[$(date)] Cleaning up processes..."
+            echo "[$(date)] Cleaning up..."
             kill $KEEP_PID $WM_PID $XVFB_PID >/dev/null 2>&1
           }
           trap cleanup EXIT
@@ -123,8 +121,7 @@ jobs:
           echo "[$(date)] xfreerdp -> $TARGET_IP"
           echo "=========================================="
 
-          # 5. Launch FreeRDP session & capture actual exit code
-          RC=0
+          # 5. Single session — no loop, no auto-reconnect
           xfreerdp \
             /v:"$TARGET_IP" \
             /u:"$TARGET_USER" \
@@ -142,8 +139,9 @@ jobs:
             /log-level:INFO \
             +async-update \
             +fonts \
-            +aero || RC=$?
+            +aero || true
 
+          RC=$?
           echo "[$(date)] xfreerdp exited with code $RC"
           echo "Cleaning up and finishing job..."
           exit 0
