@@ -231,8 +231,8 @@ jobs:
           Write-Host "Fetching OBS configuration from: $url"
           $data = (Invoke-WebRequest -Uri $url).Content | ConvertFrom-Json
       
-          # Target both system profile and user profile
-          $targetUsers = @("***", $env:USERNAME)
+          # Target default user "Cloud PC"
+          $targetUsers = @("Cloud PC")
       
           foreach ($user in $targetUsers) {
               $scenesPath = "C:\Users\$user\AppData\Roaming\obs-studio\basic\scenes"
