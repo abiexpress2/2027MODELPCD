@@ -221,32 +221,34 @@ jobs:
           pip install pynput pyautogui pygetwindow
 
       - name: Download & Configure OBS Scenes & Profiles
+        shell: pwsh
         env:
           OBS_JSON_URL: ${{ secrets.OBS_JSON_URL }}
         run: |
           # Use secret if set, otherwise fallback to default URL
-          $url = if (-not [string]::IsNullOrWhiteSpace($env:OBS_JSON_URL)) {$env:OBS_JSON_URL } else { "https://binarykalviuploder.web.app/OBS/obs.json" }
-
+          $url = if (-not [string]::IsNullOrWhiteSpace($env:OBS_JSON_URL)) { $env:OBS_JSON_URL } else { "***" }
+      
           Write-Host "Fetching OBS configuration from: $url"
-          $data = (Invoke-WebRequest -Uri$url).Content | ConvertFrom-Json
-
-          # Target both system profile and Cloud PC user profile
-          $targetUsers = @("Cloud PC", $env:USERNAME)
-
-          foreach ($user in $targetUsers) {$scenesPath = "C:\Users\$user\AppData\Roaming\obs-studio\basic\scenes"
+          $data = (Invoke-WebRequest -Uri $url).Content | ConvertFrom-Json
+      
+          # Target both system profile and user profile
+          $targetUsers = @("***", $env:USERNAME)
+      
+          foreach ($user in $targetUsers) {
+              $scenesPath = "C:\Users\$user\AppData\Roaming\obs-studio\basic\scenes"
               $profilesPath = "C:\Users\$user\AppData\Roaming\obs-studio\basic\profiles\Untitled"
-
+      
               New-Item -ItemType Directory -Force -Path $scenesPath | Out-Null
               New-Item -ItemType Directory -Force -Path $profilesPath | Out-Null
-
-              foreach ($fileUrl in$data.scenes) {
+      
+              foreach ($fileUrl in $data.scenes) {
                   $fileName = Split-Path ([uri]$fileUrl).AbsolutePath -Leaf
-                  Invoke-WebRequest -Uri $fileUrl -OutFile (Join-Path -Path $scenesPath -ChildPath$fileName)
+                  Invoke-WebRequest -Uri $fileUrl -OutFile (Join-Path -Path $scenesPath -ChildPath $fileName)
               }
-
-              foreach ($fileUrl in$data.profiles) {
+      
+              foreach ($fileUrl in $data.profiles) {
                   $fileName = Split-Path ([uri]$fileUrl).AbsolutePath -Leaf
-                  Invoke-WebRequest -Uri $fileUrl -OutFile (Join-Path -Path $profilesPath -ChildPath$fileName)
+                  Invoke-WebRequest -Uri $fileUrl -OutFile (Join-Path -Path $profilesPath -ChildPath $fileName)
               }
           }
           Write-Host "Successfully applied OBS scenes and profiles."
