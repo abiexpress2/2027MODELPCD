@@ -44,7 +44,6 @@ jobs:
           # --- AUDIO: keep playing even when RDP window is closed ---
           # ============================================================
           $rdpTcp = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
-          # AudioMode = 2 -> Play on remote computer (server-side audio rendering)
           Set-ItemProperty -Path $rdpTcp -Name "AudioMode" -Value 2 -Type DWord -Force
           Set-ItemProperty -Path $rdpTcp -Name "fDisableCam"           -Value 0 -Type DWord -Force
           Set-ItemProperty -Path $rdpTcp -Name "fDisableAudioCapture"  -Value 0 -Type DWord -Force
@@ -56,7 +55,6 @@ jobs:
           Set-ItemProperty -Path $policyPath -Name "fDisableCam"              -Value 0 -Type DWord -Force
           Set-ItemProperty -Path $policyPath -Name "fDisableAudioRedirection" -Value 0 -Type DWord -Force
 
-          # Enable + harden Windows Audio Services (auto-restart on crash)
           Set-Service -Name "AudioSrv" -StartupType Automatic
           Start-Service -Name "AudioSrv" -ErrorAction SilentlyContinue
           Set-Service -Name "AudioEndpointBuilder" -StartupType Automatic
@@ -65,7 +63,6 @@ jobs:
           sc.exe failure AudioSrv             reset= 0 actions= restart/1000/restart/1000/restart/1000 | Out-Null
           sc.exe failure AudioEndpointBuilder reset= 0 actions= restart/1000/restart/1000/restart/1000 | Out-Null
 
-          # Prevent power down or screen timeout
           powercfg /change monitor-timeout-ac 0
           powercfg /change standby-timeout-ac 0
           powercfg /change disk-timeout-ac 0
@@ -73,13 +70,11 @@ jobs:
           powercfg /change monitor-timeout-dc 0
           powercfg /change standby-timeout-dc 0
 
-          # Allow blank passwords (harmless fallback)
           Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name "LimitBlankPasswordUse" -Value 0 -Type DWord -Force
 
-          # Restart TermService
           Restart-Service -Name TermService -Force
 
-      - name: Create RDP User (Password: 123456) & Security Policies
+      - name: "Create RDP User (Password 123456) & Security Policies"
         run: |
           $userName = "Cloud PC"
           $password = "123456"
@@ -87,10 +82,8 @@ jobs:
           Write-Host "::add-mask::$password"
           Write-Host "::add-mask::$userName"
 
-          # ---------------------------------------------------------
-          # FIX: delete stale "Cloud PC*" profile folders so Windows
-          # creates a clean "C:\Users\Cloud PC" (no .MACHINENAME suffix)
-          # ---------------------------------------------------------
+          # Delete stale "Cloud PC*" profile folders so Windows creates a
+          # clean "C:\Users\Cloud PC" (no .MACHINENAME suffix)
           $staleProfiles = Get-ChildItem -Path "C:\Users" -Directory -ErrorAction SilentlyContinue |
                            Where-Object { $_.Name -like "Cloud PC*" }
           foreach ($p in $staleProfiles) {
@@ -98,7 +91,6 @@ jobs:
               Remove-Item -Path $p.FullName -Recurse -Force -ErrorAction SilentlyContinue
           }
 
-          # Disable local password complexity
           secedit /export /cfg "$env:TEMP\secpol.cfg"
           $cfgContent = Get-Content "$env:TEMP\secpol.cfg"
           $cfgContent = $cfgContent -replace 'PasswordComplexity = 1', 'PasswordComplexity = 0'
@@ -107,7 +99,6 @@ jobs:
           $cfgContent | Out-File -Encoding ascii "$env:TEMP\secpol.cfg"
           secedit /configure /db "$env:TEMP\secpol.sdb" /cfg "$env:TEMP\secpol.cfg" /areas SECURITYPOLICY
 
-          # Remove old account if it exists
           $existing = Get-LocalUser -Name $userName -ErrorAction SilentlyContinue
           if ($existing) {
               Remove-LocalUser -Name $userName -ErrorAction SilentlyContinue
@@ -124,7 +115,6 @@ jobs:
           Add-LocalGroupMember -Group "Administrators"       -Member $userName -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $userName -ErrorAction SilentlyContinue
 
-          # --- Kill lock screen / screensaver / inactivity ---
           $policyPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization'
           if (-not (Test-Path $policyPath)) { New-Item -Path $policyPath -Force | Out-Null }
           Set-ItemProperty -Path $policyPath -Name "NoLockScreen" -Value 1 -Type DWord -Force
@@ -141,7 +131,6 @@ jobs:
           Set-ItemProperty -Path $sysPol -Name "DisableLockWorkstation"    -Value 1 -Type DWord -Force
           Set-ItemProperty -Path $sysPol -Name "EnableFirstLogonAnimation" -Value 0 -Type DWord -Force
 
-          # --- Session timeouts (0 = unlimited) ---
           $tsPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
           if (-not (Test-Path $tsPath)) { New-Item -Path $tsPath -Force | Out-Null }
           Set-ItemProperty -Path $tsPath -Name "MaxIdleTime"            -Value 0 -Type DWord -Force
@@ -153,7 +142,6 @@ jobs:
           Set-ItemProperty -Path $tsPath -Name "fPromptForPassword"     -Value 0 -Type DWord -Force
           Set-ItemProperty -Path $tsPath -Name "fAllowToGetHelp"        -Value 0 -Type DWord -Force
 
-          # --- AutoLogon with password so the desktop is always alive ---
           $winlogon = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
           Set-ItemProperty -Path $winlogon -Name "AutoAdminLogon"    -Value "1"               -Force
           Set-ItemProperty -Path $winlogon -Name "DefaultUsername"   -Value $userName         -Force
@@ -162,7 +150,6 @@ jobs:
           Set-ItemProperty -Path $winlogon -Name "ForceAutoLogon"    -Value "1"               -Force
           Remove-ItemProperty -Path $winlogon -Name "AutoLogonCount" -ErrorAction SilentlyContinue
 
-          # --- HKCU hive tweaks (only if a fresh NTUSER.DAT exists) ---
           $userHive = "C:\Users\$userName\NTUSER.DAT"
           if (Test-Path $userHive) {
               reg load "HKU\TEMPUSER" "$userHive" 2>$null | Out-Null
@@ -187,7 +174,6 @@ jobs:
           New-Item -ItemType Directory -Path $driverDir -Force | Out-Null
           Remove-Item $driverZip -Force -ErrorAction SilentlyContinue
 
-          # --- Working mirrors only (old GitHub ones returned 404) ---
           $urls = @(
               "https://www.amyuni.com/downloads/usbmmidd_v2.zip",
               "https://www.amyuni.com/downloads/usbmmidd.zip",
@@ -263,10 +249,6 @@ jobs:
           Write-Host "Fetching OBS configuration from: $url"
           $data = (Invoke-WebRequest -Uri $url).Content | ConvertFrom-Json
 
-          # ---------------------------------------------------------
-          # FIX: resolve the REAL profile path from the registry
-          # instead of hard-coding "C:\Users\Cloud PC"
-          # ---------------------------------------------------------
           $profilePath = $null
           $plRoot = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList"
           foreach ($sidKey in Get-ChildItem $plRoot -ErrorAction SilentlyContinue) {
@@ -322,7 +304,6 @@ jobs:
               -RestartInterval (New-TimeSpan -Minutes 1) `
               -ExecutionTimeLimit (New-TimeSpan -Hours 0)
 
-          # --- 1. OBS Task ---
           if (-not [string]::IsNullOrWhiteSpace($env:OBS_URL) -and -not [string]::IsNullOrWhiteSpace($env:OBS_TIME)) {
               $obsFile = "obs.py"
               $obsDest = "C:\Cloud\$obsFile"
@@ -342,7 +323,6 @@ jobs:
               }
           }
 
-          # --- 2. LOGIN Task ---
           if (-not [string]::IsNullOrWhiteSpace($env:LOGIN_URL) -and -not [string]::IsNullOrWhiteSpace($env:LOGIN_TIME)) {
               $loginFile = "login.py"
               $loginDest = "C:\Cloud\$loginFile"
@@ -362,7 +342,6 @@ jobs:
               }
           }
 
-          # --- 3. AHK Task ---
           if (-not [string]::IsNullOrWhiteSpace($env:AHK_URL) -and -not [string]::IsNullOrWhiteSpace($env:AHK_TIME)) {
               $ahkFile = "auto.ahk"
               $ahkDest = "C:\Cloud\$ahkFile"
@@ -391,8 +370,6 @@ jobs:
                   $hasConsoleActive = $false
 
                   foreach ($line in $sessions) {
-                      # Reconnect any disconnected user session to the physical console
-                      # (keeps both the GUI AND audio rendering alive on the server)
                       if ($line -match "^\s*\S+\s+(\d+)\s+Disc") {
                           $sid = $matches[1]
                           if ($sid -ne "0") {
@@ -404,14 +381,12 @@ jobs:
                       }
                   }
 
-                  # If no Active console session exists, reboot — AutoAdminLogon recreates the desktop
                   if (-not $hasConsoleActive) {
                       Add-Content -Path "C:\Cloud\keepalive.log" -Value "[$(Get-Date)] No active console — rebooting"
                       cmd.exe /c "shutdown /r /t 0 /f" 2>$null
                       Start-Sleep -Seconds 120
                   }
 
-                  # Make sure audio services are always running
                   foreach ($svc in @("AudioSrv","AudioEndpointBuilder")) {
                       $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
                       if ($s -and $s.Status -ne "Running") {
