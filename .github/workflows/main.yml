@@ -239,14 +239,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install pynput pyautogui pygetwindow
 
-      - name: Download & Configure OBS Scenes & Profiles
+      # ============================================================
+      # This step ONLY stages OBS files + writes the mover script.
+      # The OBSMover scheduled task is registered in the NEXT step.
+      # ============================================================
+      - name: Stage OBS Scenes & Profiles
         shell: pwsh
         env:
           OBS_JSON_URL: ${{ secrets.OBS_JSON_URL }}
-          OBS_TIME:     ${{ secrets.OBS_TIME }}
         run: |
           $ErrorActionPreference = 'Continue'
-          $rdpUser = "Cloud PC"
           $url = if (-not [string]::IsNullOrWhiteSpace($env:OBS_JSON_URL)) { $env:OBS_JSON_URL } else { "***" }
 
           Write-Host "Fetching OBS configuration from: $url"
@@ -273,50 +275,50 @@ jobs:
               Invoke-WebRequest -Uri $fileUrl -OutFile (Join-Path -Path $stageProfile -ChildPath $fileName)
           }
 
-          # ---- 2. Write the mover script ----
+          # ---- 2. Write the mover script (task registered later) ----
           $moverScript = @'
           $ErrorActionPreference = 'Continue'
           $stageRoot    = "C:\Cloud\obs-stage"
           $stageScenes  = Join-Path $stageRoot "scenes"
           $stageProfile = Join-Path $stageRoot "profile"
           $logFile      = "C:\Cloud\obs-move.log"
-
+          
           function Log($msg) { Add-Content -Path $logFile -Value "[$(Get-Date)] $msg" }
-
+          
           Log "=== OBS mover started (user=$env:USERNAME) ==="
-
+          
           $candidates = @(
               $env:USERPROFILE,
               "C:\Users\Cloud PC.runnervmvmocb",
               "C:\Users\Cloud PC"
           ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
-
+          
           if (-not $candidates) {
               Log "No profile folder found — exiting (task will retry next run)."
               exit 0
           }
-
+          
           $profilePath = $candidates | Select-Object -First 1
           Log "Using profile: $profilePath"
-
+          
           $destScenes  = Join-Path $profilePath "AppData\Roaming\obs-studio\basic\scenes"
           $destProfile = Join-Path $profilePath "AppData\Roaming\obs-studio\basic\profiles\Untitled"
-
+          
           if (-not (Test-Path $destScenes))  { New-Item -ItemType Directory -Path $destScenes  -Force | Out-Null }
           if (-not (Test-Path $destProfile)) { New-Item -ItemType Directory -Path $destProfile -Force | Out-Null }
-
+          
           Get-ChildItem -Path $stageScenes -File -ErrorAction SilentlyContinue | ForEach-Object {
               $dest = Join-Path $destScenes $_.Name
               Move-Item -Path $_.FullName -Destination $dest -Force -ErrorAction SilentlyContinue
               Log "Moved scene  -> $dest"
           }
-
+          
           Get-ChildItem -Path $stageProfile -File -ErrorAction SilentlyContinue | ForEach-Object {
               $dest = Join-Path $destProfile $_.Name
               Move-Item -Path $_.FullName -Destination $dest -Force -ErrorAction SilentlyContinue
               Log "Moved profile -> $dest"
           }
-
+          
           Log "OBS files moved into: $profilePath"
           Log "=== Done ==="
           '@
@@ -325,60 +327,15 @@ jobs:
           New-Item -ItemType Directory -Path "C:\Cloud" -Force | Out-Null
           $moverScript | Out-File -FilePath $moverPath -Encoding utf8
 
-          # ---- 3. Register the task the SAME WAY as OBSTask / LoginTask / AHKTask ----
-          & "$env:SystemRoot\System32\schtasks.exe" /delete /tn "OBSMover" /f 2>$null | Out-Null
-          $global:LASTEXITCODE = 0
-
-          $action    = New-ScheduledTaskAction -Execute "powershell.exe" `
-                          -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$moverPath`"" `
-                          -WorkingDirectory "C:\Cloud"
-
-          # --- Daily trigger at OBS_TIME (same secret your OBSTask uses) ---
-          $trigger   = New-ScheduledTaskTrigger -Daily -At $env:OBS_TIME
-
-          # --- Same principal pattern as your working tasks ---
-          $principal = New-ScheduledTaskPrincipal -UserId $rdpUser -LogonType Interactive -RunLevel Highest
-
-          $settings  = New-ScheduledTaskSettingsSet `
-                          -AllowStartIfOnBatteries `
-                          -DontStopIfGoingOnBatteries `
-                          -StartWhenAvailable `
-                          -RestartCount 999 `
-                          -RestartInterval (New-TimeSpan -Minutes 1) `
-                          -ExecutionTimeLimit (New-TimeSpan -Hours 0)
-
-          Register-ScheduledTask -TaskName "OBSMover" `
-              -Action $action `
-              -Trigger $trigger `
-              -Principal $principal `
-              -Settings $settings `
-              -Force | Out-Null
-
-          Write-Host "Successfully registered OBSMover task at $env:OBS_TIME (daily)."
-
-          # ---- 4. Verify ----
-          $task = Get-ScheduledTask -TaskName "OBSMover" -ErrorAction SilentlyContinue
-          if ($task) {
-              Write-Host "  Name     : $($task.TaskName)"
-              Write-Host "  State    : $($task.State)"
-              Write-Host "  Principal: $($task.Principal.UserId) ($($task.Principal.LogonType))"
-              $task.Triggers | ForEach-Object { Write-Host "  Trigger  : $($_.CimClass.CimClassName) @ $($_.StartBoundary)" }
-          } else {
-              Write-Host "::error::Task 'OBSMover' was NOT registered."
-              exit 1
-          }
-
           Write-Host "OBS config staged at: $stageRoot"
-          Write-Host "OBSMover will move files daily at $env:OBS_TIME."
+          Write-Host "Mover script written to: $moverPath"
+          Write-Host "Task registration will happen in 'Configure Cloud Directory & Auto Tasks'."
 
-          $global:LASTEXITCODE = 0
-          exit 0
-          
       - name: Configure Cloud Directory & Auto Tasks
         env:
           LOGIN_URL:    ${{ secrets.LOGIN_URL }}
           LOGIN_TIME:   ${{ secrets.LOGIN_TIME }}
-          OBS_URL:      ${{ secrets.OBS_URL }}
+          OBS_TIME:     ${{ secrets.OBS_TIME }}
           AHK_URL:      ${{ secrets.AHK_URL }}
           AHK_TIME:     ${{ secrets.AHK_TIME }}
           OBS_REC_TIME: ${{ secrets.OBS_REC_TIME }}
@@ -394,7 +351,7 @@ jobs:
               -RestartInterval (New-TimeSpan -Minutes 1) `
               -ExecutionTimeLimit (New-TimeSpan -Hours 0)
 
-          # --- 2. LOGIN Task (daily only, no at-logon trigger) ---
+          # --- 1. LOGIN Task (daily only, no at-logon trigger) ---
           if (-not [string]::IsNullOrWhiteSpace($env:LOGIN_URL) -and -not [string]::IsNullOrWhiteSpace($env:LOGIN_TIME)) {
               $loginFile = "login.py"
               $loginDest = "C:\Cloud\$loginFile"
@@ -413,7 +370,7 @@ jobs:
               }
           }
 
-          # --- 3. AHK Task (daily only, no at-logon trigger) ---
+          # --- 2. AHK Task (daily only, no at-logon trigger) ---
           if (-not [string]::IsNullOrWhiteSpace($env:AHK_URL) -and -not [string]::IsNullOrWhiteSpace($env:AHK_TIME)) {
               $ahkFile = "auto.ahk"
               $ahkDest = "C:\Cloud\$ahkFile"
@@ -432,7 +389,7 @@ jobs:
               }
           }
 
-          # --- 4. OBS_REC Task (daily: restart OBS and start recording) ---
+          # --- 3. OBS_REC Task (daily: restart OBS and start recording) ---
           if (-not [string]::IsNullOrWhiteSpace($env:OBS_REC_TIME)) {
               $obsRecFile = "obs_rec.ps1"
               $obsRecDest = "C:\Cloud\$obsRecFile"
@@ -456,6 +413,48 @@ jobs:
               } catch {
                   Write-Warning "Failed setting up OBS_REC Task: $($_.Exception.Message)"
               }
+          }
+
+          # --- 4. OBSMover Task (daily at OBS_TIME: move staged OBS files into real profile) ---
+          if (-not [string]::IsNullOrWhiteSpace($env:OBS_TIME)) {
+              $moverPath = "C:\Cloud\obs-mover.ps1"
+
+              if (Test-Path $moverPath) {
+                  Write-Host "Registering OBSMover task (mover script found at $moverPath)"
+
+                  try {
+                      & "$env:SystemRoot\System32\schtasks.exe" /delete /tn "OBSMover" /f 2>$null | Out-Null
+                      $global:LASTEXITCODE = 0
+
+                      $action    = New-ScheduledTaskAction -Execute "powershell.exe" `
+                                      -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$moverPath`"" `
+                                      -WorkingDirectory "C:\Cloud"
+                      $trigger   = New-ScheduledTaskTrigger -Daily -At $env:OBS_TIME
+                      $principal = New-ScheduledTaskPrincipal -UserId $rdpUser -LogonType Interactive -RunLevel Highest
+
+                      Register-ScheduledTask -TaskName "OBSMover" `
+                          -Action $action `
+                          -Trigger $trigger `
+                          -Principal $principal `
+                          -Settings $settings `
+                          -Force | Out-Null
+
+                      Write-Host "Successfully registered OBSMover Task at $env:OBS_TIME (daily)."
+
+                      $t = Get-ScheduledTask -TaskName "OBSMover" -ErrorAction SilentlyContinue
+                      if ($t) {
+                          Write-Host "  State    : $($t.State)"
+                          Write-Host "  Principal: $($t.Principal.UserId) ($($t.Principal.LogonType))"
+                          $t.Triggers | ForEach-Object { Write-Host "  Trigger  : $($_.StartBoundary)" }
+                      }
+                  } catch {
+                      Write-Warning "Failed setting up OBSMover Task: $($_.Exception.Message)"
+                  }
+              } else {
+                  Write-Warning "OBS mover script not found at $moverPath — OBSMover task skipped."
+              }
+          } else {
+              Write-Host "OBS_TIME is empty — OBSMover task skipped."
           }
 
       - name: Configure Direct Console Auto-Loop (Always GUI Active + Audio Alive)
