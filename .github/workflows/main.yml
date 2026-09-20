@@ -82,14 +82,21 @@ jobs:
           $cfgContent | Out-File -Encoding ascii "$env:TEMP\secpol.cfg"
           secedit /configure /db "$env:TEMP\secpol.sdb" /cfg "$env:TEMP\secpol.cfg" /areas SECURITYPOLICY
 
-          # Create Account with NO password
-          New-LocalUser -Name $userName -NoPassword -AccountNeverExpires -PasswordNeverExpires -ErrorAction SilentlyContinue
-          net user "$userName" ""             # blank password
+          # --- Create Account with NO password (FIXED) ---
+          # NOTE: -NoPassword and -PasswordNeverExpires CANNOT be combined (different parameter sets).
+          $existing = Get-LocalUser -Name $userName -ErrorAction SilentlyContinue
+          if ($existing) {
+              Remove-LocalUser -Name $userName -ErrorAction SilentlyContinue
+          }
+
+          New-LocalUser -Name $userName -NoPassword -AccountNeverExpires -ErrorAction Stop
+
+          net user "$userName" ""
           net user "$userName" /active:yes
           net user "$userName" /passwordchg:no
           net user "$userName" /expires:never
 
-          Add-LocalGroupMember -Group "Administrators"      -Member $userName -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Administrators"       -Member $userName -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $userName -ErrorAction SilentlyContinue
 
           # --- Kill lock screen / screensaver / inactivity ---
@@ -112,25 +119,22 @@ jobs:
           # --- Session timeouts (0 = unlimited, no logoff, no disconnect) ---
           $tsPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
           if (-not (Test-Path $tsPath)) { New-Item -Path $tsPath -Force | Out-Null }
-          Set-ItemProperty -Path $tsPath -Name "MaxIdleTime"                     -Value 0 -Type DWord -Force
-          Set-ItemProperty -Path $tsPath -Name "MaxDisconnectionTime"            -Value 0 -Type DWord -Force
-          Set-ItemProperty -Path $tsPath -Name "RemoteAppLogoffTimeout"          -Value 0 -Type DWord -Force
-          Set-ItemProperty -Path $tsPath -Name "fResetBroken"                    -Value 0 -Type DWord -Force
-          Set-ItemProperty -Path $tsPath -Name "fDisableAutoReconnect"           -Value 0 -Type DWord -Force
-          Set-ItemProperty -Path $tsPath -Name "fNoRemoteControl"                -Value 0 -Type DWord -Force
-          Set-ItemProperty -Path $tsPath -Name "fPromptForPassword"              -Value 0 -Type DWord -Force
-          Set-ItemProperty -Path $tsPath -Name "fAllowToGetHelp"                 -Value 0 -Type DWord -Force
-
-          # Allow RDP logon with blank password
-          Set-ItemProperty -Path $tsPath -Name "fPromptForPassword"              -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path $tsPath -Name "MaxIdleTime"            -Value 0 -Type DWord -Force
+          Set-ItemProperty -Path $tsPath -Name "MaxDisconnectionTime"   -Value 0 -Type DWord -Force
+          Set-ItemProperty -Path $tsPath -Name "RemoteAppLogoffTimeout" -Value 0 -Type DWord -Force
+          Set-ItemProperty -Path $tsPath -Name "fResetBroken"           -Value 0 -Type DWord -Force
+          Set-ItemProperty -Path $tsPath -Name "fDisableAutoReconnect"  -Value 0 -Type DWord -Force
+          Set-ItemProperty -Path $tsPath -Name "fNoRemoteControl"       -Value 0 -Type DWord -Force
+          Set-ItemProperty -Path $tsPath -Name "fPromptForPassword"     -Value 0 -Type DWord -Force
+          Set-ItemProperty -Path $tsPath -Name "fAllowToGetHelp"        -Value 0 -Type DWord -Force
 
           # --- AutoLogon (blank password) so the desktop is always alive ---
           $winlogon = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
-          Set-ItemProperty -Path $winlogon -Name "AutoAdminLogon"   -Value "1"       -Force
-          Set-ItemProperty -Path $winlogon -Name "DefaultUsername"  -Value $userName -Force
-          Set-ItemProperty -Path $winlogon -Name "DefaultPassword"  -Value ""        -Force
+          Set-ItemProperty -Path $winlogon -Name "AutoAdminLogon"    -Value "1"               -Force
+          Set-ItemProperty -Path $winlogon -Name "DefaultUsername"   -Value $userName         -Force
+          Set-ItemProperty -Path $winlogon -Name "DefaultPassword"   -Value ""                -Force
           Set-ItemProperty -Path $winlogon -Name "DefaultDomainName" -Value $env:COMPUTERNAME -Force
-          Set-ItemProperty -Path $winlogon -Name "ForceAutoLogon"   -Value "1"       -Force
+          Set-ItemProperty -Path $winlogon -Name "ForceAutoLogon"    -Value "1"               -Force
           Remove-ItemProperty -Path $winlogon -Name "AutoLogonCount" -ErrorAction SilentlyContinue
 
           # --- HKCU hive tweaks for the Cloud PC user ---
