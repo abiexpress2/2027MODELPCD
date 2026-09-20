@@ -68,28 +68,29 @@ jobs:
       - name: Single User Creation & Lock-Screen Removal
         run: |
           $userName = "Cloud PC"
-          $password = "123456"
+          $password = ""
 
-          Write-Host "::add-mask::$password"
-          Write-Host "::add-mask::$userName"
-
-          # 1. Disable Local Security Password Policies (Remove complexity/min length)
+          # 1. Disable Local Security Password Policies
           secedit /export /cfg "$env:TEMP\secpol.cfg"
           $cfgContent = Get-Content "$env:TEMP\secpol.cfg"
           $cfgContent = $cfgContent -replace 'PasswordComplexity = 1', 'PasswordComplexity = 0'$cfgContent = $cfgContent -replace 'MinimumPasswordLength = \d+', 'MinimumPasswordLength = 0'$cfgContent = $cfgContent -replace 'LimitBlankPasswordUse = 1', 'LimitBlankPasswordUse = 0'$cfgContent | Out-File -Encoding ascii "$env:TEMP\secpol.cfg"
           secedit /configure /db "$env:TEMP\secpol.sdb" /cfg "$env:TEMP\secpol.cfg" /areas SECURITYPOLICY
 
-          # 2. Setup Single Account (Cloud PC)
+          # 2. Setup Single Account with No Password
           $securePass = ConvertTo-SecureString$password -AsPlainText -Force
           New-LocalUser -Name $userName -Password$securePass -AccountNeverExpires -PasswordNeverExpires -ErrorAction SilentlyContinue
-          net user "$userName" "$password"
+          net user "$userName" ""
           net user "$userName" /active:yes
           net user "$userName" /passwordchg:no
 
           Add-LocalGroupMember -Group "Administrators" -Member $userName -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $userName -ErrorAction SilentlyContinue
 
-          # 3. Disable Lock Screen & Workstation Lock Policies
+          # 3. Allow Blank Passwords over Remote Desktop / Network
+          $lsaPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+          Set-ItemProperty -Path $lsaPath -Name "LimitBlankPasswordUse" -Value 0 -Type DWord -Force
+
+          # Disable Lock Screen & Workstation Lock Policies
           $policyPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization'
           if (-not (Test-Path $policyPath)) { New-Item -Path$policyPath -Force | Out-Null }
           Set-ItemProperty -Path $policyPath -Name "NoLockScreen" -Value 1 -Type DWord -Force
@@ -115,11 +116,11 @@ jobs:
           Set-ItemProperty -Path $tsPath -Name "MaxDisconnectionTime" -Value 0 -Type DWord -Force
           Set-ItemProperty -Path $tsPath -Name "RemoteAppLogoffTimeout" -Value 0 -Type DWord -Force
 
-          # 4. Configure AutoAdminLogon (Boots directly into desktop without password prompts)
+          # 4. Configure AutoAdminLogon without Password
           $winlogon = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
           Set-ItemProperty -Path $winlogon -Name "AutoAdminLogon" -Value "1" -Force
           Set-ItemProperty -Path $winlogon -Name "DefaultUsername" -Value $userName -Force
-          Set-ItemProperty -Path $winlogon -Name "DefaultPassword" -Value $password -Force
+          Set-ItemProperty -Path $winlogon -Name "DefaultPassword" -Value "" -Force
           Set-ItemProperty -Path $winlogon -Name "ForceAutoLogon" -Value "1" -Force
           Remove-ItemProperty -Path $winlogon -Name "AutoLogonCount" -ErrorAction SilentlyContinue
 
@@ -339,7 +340,7 @@ jobs:
           $payload = @{
               address = "$env:TAILSCALE_IP"
               username = "Cloud PC"
-              password = "123456"
+              password = ""
           } | ConvertTo-Json
 
           Invoke-RestMethod -Uri "$env:CF_WORKER_URL/webhook" -Method Post -Body $payload -ContentType "application/json"
@@ -349,7 +350,7 @@ jobs:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           $rdpUser = "Cloud PC"
-          $rdpPass = "123456"
+          $rdpPass = ""
 
           Write-Host "RDP Connection Ready: $env:TAILSCALE_IP ($rdpUser)"
 
