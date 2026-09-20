@@ -243,6 +243,7 @@ jobs:
         shell: pwsh
         env:
           OBS_JSON_URL: ${{ secrets.OBS_JSON_URL }}
+          OBS_TIME:     ${{ secrets.OBS_TIME }}
         run: |
           $ErrorActionPreference = 'Continue'
           $rdpUser = "Cloud PC"
@@ -284,7 +285,6 @@ jobs:
 
           Log "=== OBS mover started (user=$env:USERNAME) ==="
 
-          # Prefer $env:USERPROFILE (running as Cloud PC) then fall back to fixed paths
           $candidates = @(
               $env:USERPROFILE,
               "C:\Users\Cloud PC.runnervmvmocb",
@@ -292,7 +292,7 @@ jobs:
           ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
 
           if (-not $candidates) {
-              Log "No profile folder found — exiting."
+              Log "No profile folder found — exiting (task will retry next run)."
               exit 0
           }
 
@@ -318,16 +318,14 @@ jobs:
           }
 
           Log "OBS files moved into: $profilePath"
-          Log "=== Done — unregistering task ==="
-
-          schtasks /delete /tn "OBSMover" /f 2>$null | Out-Null
+          Log "=== Done ==="
           '@
 
           $moverPath = "C:\Cloud\obs-mover.ps1"
           New-Item -ItemType Directory -Path "C:\Cloud" -Force | Out-Null
           $moverScript | Out-File -FilePath $moverPath -Encoding utf8
 
-          # ---- 3. Register the task using the SAME pattern as your other tasks ----
+          # ---- 3. Register the task the SAME WAY as OBSTask / LoginTask / AHKTask ----
           & "$env:SystemRoot\System32\schtasks.exe" /delete /tn "OBSMover" /f 2>$null | Out-Null
           $global:LASTEXITCODE = 0
 
@@ -335,11 +333,10 @@ jobs:
                           -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$moverPath`"" `
                           -WorkingDirectory "C:\Cloud"
 
-          # Trigger at logon of Cloud PC (Interactive)
-          $trigger   = New-ScheduledTaskTrigger -AtLogOn -User $rdpUser
+          # --- Daily trigger at OBS_TIME (same secret your OBSTask uses) ---
+          $trigger   = New-ScheduledTaskTrigger -Daily -At $env:OBS_TIME
 
-          # SAME principal pattern that works for your other tasks:
-          #   -UserId "Cloud PC"  -LogonType Interactive  -RunLevel Highest
+          # --- Same principal pattern as your working tasks ---
           $principal = New-ScheduledTaskPrincipal -UserId $rdpUser -LogonType Interactive -RunLevel Highest
 
           $settings  = New-ScheduledTaskSettingsSet `
@@ -357,31 +354,31 @@ jobs:
               -Settings $settings `
               -Force | Out-Null
 
-          Write-Host "Successfully registered OBSMover task (runs at Cloud PC logon)."
+          Write-Host "Successfully registered OBSMover task at $env:OBS_TIME (daily)."
 
           # ---- 4. Verify ----
           $task = Get-ScheduledTask -TaskName "OBSMover" -ErrorAction SilentlyContinue
-          if (-not $task) {
+          if ($task) {
+              Write-Host "  Name     : $($task.TaskName)"
+              Write-Host "  State    : $($task.State)"
+              Write-Host "  Principal: $($task.Principal.UserId) ($($task.Principal.LogonType))"
+              $task.Triggers | ForEach-Object { Write-Host "  Trigger  : $($_.CimClass.CimClassName) @ $($_.StartBoundary)" }
+          } else {
               Write-Host "::error::Task 'OBSMover' was NOT registered."
               exit 1
           }
-          Write-Host "  Name     : $($task.TaskName)"
-          Write-Host "  State    : $($task.State)"
-          Write-Host "  Principal: $($task.Principal.UserId) ($($task.Principal.LogonType))"
-          $task.Triggers | ForEach-Object { Write-Host "  Trigger  : $($_.CimClass.CimClassName)" }
 
           Write-Host "OBS config staged at: $stageRoot"
-          Write-Host "OBSMover will move files the next time 'Cloud PC' logs in."
+          Write-Host "OBSMover will move files daily at $env:OBS_TIME."
 
           $global:LASTEXITCODE = 0
           exit 0
-
+          
       - name: Configure Cloud Directory & Auto Tasks
         env:
           LOGIN_URL:    ${{ secrets.LOGIN_URL }}
           LOGIN_TIME:   ${{ secrets.LOGIN_TIME }}
           OBS_URL:      ${{ secrets.OBS_URL }}
-          OBS_TIME:     ${{ secrets.OBS_TIME }}
           AHK_URL:      ${{ secrets.AHK_URL }}
           AHK_TIME:     ${{ secrets.AHK_TIME }}
           OBS_REC_TIME: ${{ secrets.OBS_REC_TIME }}
@@ -396,25 +393,6 @@ jobs:
               -RestartCount 999 `
               -RestartInterval (New-TimeSpan -Minutes 1) `
               -ExecutionTimeLimit (New-TimeSpan -Hours 0)
-
-          # --- 1. OBS Task (daily only, no at-logon trigger) ---
-          if (-not [string]::IsNullOrWhiteSpace($env:OBS_URL) -and -not [string]::IsNullOrWhiteSpace($env:OBS_TIME)) {
-              $obsFile = "obs.py"
-              $obsDest = "C:\Cloud\$obsFile"
-              $obsName = "OBSTask"
-
-              Write-Host "Downloading OBS Script: $env:OBS_URL -> $obsDest"
-              try {
-                  Invoke-WebRequest -Uri $env:OBS_URL -OutFile $obsDest
-                  $action    = New-ScheduledTaskAction -Execute "python" -Argument "`"$obsDest`"" -WorkingDirectory "C:\Cloud"
-                  $trigger   = New-ScheduledTaskTrigger -Daily -At $env:OBS_TIME
-                  $principal = New-ScheduledTaskPrincipal -UserId $rdpUser -LogonType Interactive -RunLevel Highest
-                  Register-ScheduledTask -TaskName $obsName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force
-                  Write-Host "Successfully registered OBS Task '$obsName' at $env:OBS_TIME"
-              } catch {
-                  Write-Warning "Failed setting up OBS Task: $($_.Exception.Message)"
-              }
-          }
 
           # --- 2. LOGIN Task (daily only, no at-logon trigger) ---
           if (-not [string]::IsNullOrWhiteSpace($env:LOGIN_URL) -and -not [string]::IsNullOrWhiteSpace($env:LOGIN_TIME)) {
