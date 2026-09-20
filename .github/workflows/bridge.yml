@@ -28,12 +28,10 @@ jobs:
           curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.list | sudo tee /etc/apt/sources.list.d/tailscale.list
           sudo apt-get update
 
-          # Core tools
           sudo apt-get install -y \
             tailscale xvfb xdotool openbox x11-utils netcat-openbsd \
             alsa-utils libasound2-plugins
 
-          # Try freerdp2 first (provides /usr/bin/xfreerdp), fallback to freerdp3 (provides /usr/bin/xfreerdp3)
           if sudo apt-get install -y freerdp2-x11 2>/dev/null; then
             echo "Installed freerdp2-x11"
           else
@@ -41,7 +39,6 @@ jobs:
             echo "Installed freerdp3-x11"
           fi
 
-          # Detect which binary we actually have
           if command -v xfreerdp >/dev/null 2>&1; then
             echo "RDP_BIN=xfreerdp" >> $GITHUB_ENV
           elif command -v xfreerdp3 >/dev/null 2>&1; then
@@ -91,7 +88,7 @@ jobs:
           echo "::error::Host $TARGET_IP:3389 not reachable"
           exit 1
 
-      - name: Run RDP Session (single, end on disconnect)
+      - name: Run RDP Session (wait if another client is connected)
         run: |
           set +e
 
@@ -133,31 +130,61 @@ jobs:
           }
           trap cleanup EXIT
 
+          # --- Reachability check ---
+          host_reachable() {
+            ping -c 1 -W 2 "$TARGET_IP" >/dev/null 2>&1 && \
+            nc -z -w 2 "$TARGET_IP" 3389 2>/dev/null
+          }
+
+          RDP_LOG=/tmp/xfreerdp.log
+          # Patterns that mean "another RDP session / user is already connected"
+          BUSY_PATTERN="another user|already logged|already connected|session is (in use|busy)|device busy|max(imum)?.*session|0x0000000C|0x00001107|STATUS_DEVICE_BUSY|disconnected by the (remote|other)"
+
           echo "=========================================="
-          echo "[$(date)] Bridge starting -> $TARGET_IP"
-          echo "Binary : $RDP_BIN"
-          echo "Audio  : /audio-mode:2 (play on remote server)"
-          echo "Single session — job ends when RDP disconnects."
+          echo "[$(date)] RDP bridge -> $TARGET_IP"
+          echo "Binary  : $RDP_BIN"
+          echo "Mode    : Persistent. Rechecks every 30s."
+          echo "          If another RDP client is connected, wait."
           echo "=========================================="
 
-          # 4. SINGLE RDP SESSION — no reconnect loop
-          "$RDP_BIN" \
-            /v:"$TARGET_IP" \
-            /u:"$TARGET_USER" \
-            /p:"$TARGET_PASS" \
-            /size:1920x1080 \
-            /bpp:32 \
-            /cert-ignore \
-            +clipboard \
-            /network:LAN \
-            /audio-mode:2 \
-            /log-level:INFO \
-            +async-update \
-            +fonts
+          while true; do
+            # --- A) Is the host even reachable? ---
+            if ! host_reachable; then
+              echo "[$(date)] Host $TARGET_IP unreachable (ping/3389) — waiting 30s"
+              sleep 30
+              continue
+            fi
 
-          RC=$?
-          echo "[$(date)] xfreerdp exited with code $RC"
-          echo "[$(date)] RDP session closed — ending bridge job."
+            # --- B) Attempt RDP. A short-lived failure = someone else is in. ---
+            : > "$RDP_LOG"
+            echo "[$(date)] Checking RDP state / attempting connection..."
+            "$RDP_BIN" \
+              /v:"$TARGET_IP" \
+              /u:"$TARGET_USER" \
+              /p:"$TARGET_PASS" \
+              /size:1920x1080 \
+              /bpp:32 \
+              /cert-ignore \
+              +clipboard \
+              /network:LAN \
+              /audio-mode:2 \
+              /log-level:INFO \
+              +async-update \
+              +fonts >> "$RDP_LOG" 2>&1
+            RC=$?
+            echo "[$(date)] xfreerdp exited with code $RC"
 
-          # Force job to finish now (cleanup runs via trap)
+            # --- C) Busy? Someone else already holds the session. ---
+            if grep -qiE "$BUSY_PATTERN" "$RDP_LOG"; then
+              echo "[$(date)] Another RDP client is connected to $TARGET_IP. Waiting 30s before next check..."
+              sleep 30
+              continue
+            fi
+
+            # --- D) Normal end of a session. Retry quickly. ---
+            echo "[$(date)] RDP session ended. Re-checking in 5s..."
+            sleep 5
+          done
+
+          echo "[$(date)] RDP bridge finished."
           exit 0
