@@ -276,47 +276,73 @@ jobs:
           # ---- 2. Write the mover script ----
           $moverScript = @'
           $ErrorActionPreference = 'Continue'
+
           $stageRoot    = "C:\Cloud\obs-stage"
           $stageScenes  = Join-Path $stageRoot "scenes"
           $stageProfile = Join-Path $stageRoot "profile"
           $logFile      = "C:\Cloud\obs-move.log"
-
-          function Log($msg) { Add-Content -Path $logFile -Value "[$(Get-Date)] $msg" }
-
+          
+          function Log($msg) {
+              Add-Content -Path $logFile -Value "[$(Get-Date)] $msg"
+          }
+          
           Log "=== OBS mover started (user=$env:USERNAME) ==="
-
+          
           $candidates = @(
-              $env:USERPROFILE,
-              "C:\Users\Cloud PC.runnervmvmocb",
+              $env:USERPROFILE
+              "C:\Users\Cloud PC.runnervmvmocb"
               "C:\Users\Cloud PC"
-          ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
-
+          ) | Where-Object {
+              $_ -and (Test-Path $_)
+          } | Select-Object -Unique
+          
           if (-not $candidates) {
-              Log "No profile folder found — exiting (task will retry next run)."
+              Log "No profile folder found - exiting."
               exit 0
           }
-
+          
           $profilePath = $candidates | Select-Object -First 1
           Log "Using profile: $profilePath"
-
-          $destScenes  = Join-Path $profilePath "AppData\Roaming\obs-studio\basic\scenes"
+          
+          $destScenes = Join-Path $profilePath "AppData\Roaming\obs-studio\basic\scenes"
           $destProfile = Join-Path $profilePath "AppData\Roaming\obs-studio\basic\profiles\Untitled"
-
-          if (-not (Test-Path $destScenes))  { New-Item -ItemType Directory -Path $destScenes  -Force | Out-Null }
-          if (-not (Test-Path $destProfile)) { New-Item -ItemType Directory -Path $destProfile -Force | Out-Null }
-
-          Get-ChildItem -Path $stageScenes -File -ErrorAction SilentlyContinue | ForEach-Object {
-              $dest = Join-Path $destScenes $_.Name
-              Move-Item -Path $_.FullName -Destination $dest -Force -ErrorAction SilentlyContinue
-              Log "Moved scene  -> $dest"
+          
+          if (-not (Test-Path $destScenes)) {
+              New-Item -ItemType Directory -Path $destScenes -Force | Out-Null
           }
-
-          Get-ChildItem -Path $stageProfile -File -ErrorAction SilentlyContinue | ForEach-Object {
-              $dest = Join-Path $destProfile $_.Name
-              Move-Item -Path $_.FullName -Destination $dest -Force -ErrorAction SilentlyContinue
-              Log "Moved profile -> $dest"
+          
+          if (-not (Test-Path $destProfile)) {
+              New-Item -ItemType Directory -Path $destProfile -Force | Out-Null
           }
-
+          
+          if (Test-Path $stageScenes) {
+              Get-ChildItem -Path $stageScenes -File -ErrorAction SilentlyContinue | ForEach-Object {
+                  $dest = Join-Path $destScenes $_.Name
+          
+                  Move-Item `
+                      -Path $_.FullName `
+                      -Destination $dest `
+                      -Force `
+                      -ErrorAction SilentlyContinue
+          
+                  Log "Moved scene -> $dest"
+              }
+          }
+          
+          if (Test-Path $stageProfile) {
+              Get-ChildItem -Path $stageProfile -File -ErrorAction SilentlyContinue | ForEach-Object {
+                  $dest = Join-Path $destProfile $_.Name
+          
+                  Move-Item `
+                      -Path $_.FullName `
+                      -Destination $dest `
+                      -Force `
+                      -ErrorAction SilentlyContinue
+          
+                  Log "Moved profile -> $dest"
+              }
+          }
+          
           Log "OBS files moved into: $profilePath"
           Log "=== Done ==="
           '@
