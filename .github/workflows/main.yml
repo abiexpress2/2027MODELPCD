@@ -454,11 +454,11 @@ jobs:
               $obsRecDest = "C:\Cloud\$obsRecFile"
               $obsRecName = "OBS_REC"
 
-              $obsRecScript = @'
-              Stop-Process -Name "obs64" -ErrorAction SilentlyContinue
-              Start-Sleep -Seconds 3
-              Start-Process "C:\Program Files\obs-studio\bin\64bit\obs64.exe" -WorkingDirectory "C:\Program Files\obs-studio\bin\64bit" -ArgumentList "--collection", "Zoom", "--startrecording"
-              '@
+              $obsRecScript = @(
+                  'Stop-Process -Name "obs64" -ErrorAction SilentlyContinue'
+                  'Start-Sleep -Seconds 3'
+                  'Start-Process "C:\Program Files\obs-studio\bin\64bit\obs64.exe" -WorkingDirectory "C:\Program Files\obs-studio\bin\64bit" -ArgumentList "--collection", "Zoom", "--startrecording"'
+              ) -join "`r`n"
 
               Write-Host "Creating OBS_REC script: $obsRecDest"
               try {
