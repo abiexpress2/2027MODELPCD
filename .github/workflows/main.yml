@@ -249,28 +249,59 @@ jobs:
           Write-Host "Fetching OBS configuration from: $url"
           $data = (Invoke-WebRequest -Uri $url).Content | ConvertFrom-Json
 
-          # Target the real profile folder (with machine-name suffix)
-          $profilePath = "C:\Users\Cloud PC"
+          # ---- Pick whichever existing profile path is present ----
+          $candidates = @(
+              "C:\Users\Cloud PC.runnervmvmocb",
+              "C:\Users\Cloud PC"
+          )
+
+          $profilePath = $null
+          foreach ($p in $candidates) {
+              if (Test-Path $p) {
+                  $profilePath = $p
+                  Write-Host "Using existing profile path: $profilePath"
+                  break
+              }
+          }
+
+          if (-not $profilePath) {
+              Write-Host "::error::Neither 'C:\Users\Cloud PC.runnervmvmocb' nor 'C:\Users\Cloud PC' exists."
+              exit 1
+          }
 
           $scenesPath   = Join-Path $profilePath "AppData\Roaming\obs-studio\basic\scenes"
           $profilesPath = Join-Path $profilePath "AppData\Roaming\obs-studio\basic\profiles\Untitled"
 
-          New-Item -ItemType Directory -Force -Path $scenesPath   | Out-Null
-          New-Item -ItemType Directory -Force -Path $profilesPath | Out-Null
+          if (-not (Test-Path $scenesPath) -or -not (Test-Path $profilesPath)) {
+              Write-Host "::error::OBS folders are missing under $profilePath."
+              exit 1
+          }
+
+          # ---- Download to temp, then move into the existing path ----
+          $tempDir = "$env:TEMP\obs-dl"
+          if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue }
+          New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 
           foreach ($fileUrl in $data.scenes) {
               $fileName = Split-Path ([uri]$fileUrl).AbsolutePath -Leaf
+              $tmpFile  = Join-Path $tempDir $fileName
               Write-Host "Downloading scene: $fileName"
-              Invoke-WebRequest -Uri $fileUrl -OutFile (Join-Path -Path $scenesPath -ChildPath $fileName)
+              Invoke-WebRequest -Uri $fileUrl -OutFile $tmpFile
+              Move-Item -Path $tmpFile -Destination (Join-Path $scenesPath $fileName) -Force
           }
 
           foreach ($fileUrl in $data.profiles) {
               $fileName = Split-Path ([uri]$fileUrl).AbsolutePath -Leaf
+              $tmpFile  = Join-Path $tempDir $fileName
               Write-Host "Downloading profile: $fileName"
-              Invoke-WebRequest -Uri $fileUrl -OutFile (Join-Path -Path $profilesPath -ChildPath $fileName)
+              Invoke-WebRequest -Uri $fileUrl -OutFile $tmpFile
+              Move-Item -Path $tmpFile -Destination (Join-Path $profilesPath $fileName) -Force
           }
 
-          Write-Host "OBS scenes and profiles written to:"
+          Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+
+          Write-Host "Moved OBS files into existing path:"
+          Write-Host "  Profile : $profilePath"
           Write-Host "  Scenes  : $scenesPath"
           Write-Host "  Profiles: $profilesPath"
 
