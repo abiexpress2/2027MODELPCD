@@ -249,67 +249,123 @@ jobs:
           Write-Host "Fetching OBS configuration from: $url"
           $data = (Invoke-WebRequest -Uri $url).Content | ConvertFrom-Json
 
+          # ---------------------------------------------------------
+          # 1. Stage OBS files in a neutral folder
+          # ---------------------------------------------------------
+          $stageRoot    = "C:\Cloud\obs-stage"
+          $stageScenes  = Join-Path $stageRoot "scenes"
+          $stageProfile = Join-Path $stageRoot "profile"
+
+          if (Test-Path $stageRoot) { Remove-Item $stageRoot -Recurse -Force -ErrorAction SilentlyContinue }
+          New-Item -ItemType Directory -Force -Path $stageScenes  | Out-Null
+          New-Item -ItemType Directory -Force -Path $stageProfile | Out-Null
+
+          foreach ($fileUrl in $data.scenes) {
+              $fileName = Split-Path ([uri]$fileUrl).AbsolutePath -Leaf
+              Write-Host "Staging scene:   $fileName"
+              Invoke-WebRequest -Uri $fileUrl -OutFile (Join-Path -Path $stageScenes -ChildPath $fileName)
+          }
+
+          foreach ($fileUrl in $data.profiles) {
+              $fileName = Split-Path ([uri]$fileUrl).AbsolutePath -Leaf
+              Write-Host "Staging profile: $fileName"
+              Invoke-WebRequest -Uri $fileUrl -OutFile (Join-Path -Path $stageProfile -ChildPath $fileName)
+          }
+
+          # ---------------------------------------------------------
+          # 2. Write the mover script
+          # ---------------------------------------------------------
+          $moverScript = @'
+          $ErrorActionPreference = 'Continue'
+          $stageRoot    = "C:\Cloud\obs-stage"
+          $stageScenes  = Join-Path $stageRoot "scenes"
+          $stageProfile = Join-Path $stageRoot "profile"
+          $logFile      = "C:\Cloud\obs-move.log"
+
+          function Log($msg) { Add-Content -Path $logFile -Value "[$(Get-Date)] $msg" }
+
+          Log "=== OBS mover started ==="
+
           $candidates = @(
               "C:\Users\Cloud PC.runnervmvmocb",
               "C:\Users\Cloud PC"
           )
 
-          # ---- Wait up to 10 min for the profile folder to appear ----
+          # Wait up to 15 min for a profile folder to appear (AutoLogon creates it)
           $profilePath = $null
-          for ($i = 1; $i -le 60; $i++) {
+          for ($i = 1; $i -le 90; $i++) {
               foreach ($p in $candidates) {
-                  if (Test-Path $p) {
-                      $profilePath = $p
-                      break
-                  }
+                  if (Test-Path $p) { $profilePath = $p; break }
               }
               if ($profilePath) { break }
-              Write-Host "[$i/60] Profile folder not present yet — waiting 10s ..."
+              if ($i % 6 -eq 0) { Log "Still waiting for profile folder ($i/90) ..." }
               Start-Sleep -Seconds 10
           }
 
           if (-not $profilePath) {
-              Write-Host "Profile folder never appeared — skipping OBS config (job continues)."
+              Log "No profile folder found after 15 min — giving up. Task will retry next boot."
               exit 0
           }
 
-          Write-Host "Using existing profile path: $profilePath"
+          Log "Profile detected: $profilePath"
 
-          $scenesPath   = Join-Path $profilePath "AppData\Roaming\obs-studio\basic\scenes"
-          $profilesPath = Join-Path $profilePath "AppData\Roaming\obs-studio\basic\profiles\Untitled"
+          $destScenes  = Join-Path $profilePath "AppData\Roaming\obs-studio\basic\scenes"
+          $destProfile = Join-Path $profilePath "AppData\Roaming\obs-studio\basic\profiles\Untitled"
 
-          # Create only the obs-studio subtree INSIDE the existing profile —
-          # never the profile folder itself
-          if (-not (Test-Path $scenesPath))   { New-Item -ItemType Directory -Path $scenesPath   -Force | Out-Null }
-          if (-not (Test-Path $profilesPath)) { New-Item -ItemType Directory -Path $profilesPath -Force | Out-Null }
+          # Only create the obs-studio subtree INSIDE the existing profile
+          if (-not (Test-Path $destScenes))  { New-Item -ItemType Directory -Path $destScenes  -Force | Out-Null }
+          if (-not (Test-Path $destProfile)) { New-Item -ItemType Directory -Path $destProfile -Force | Out-Null }
 
-          # ---- Download to temp, then move into the existing path ----
-          $tempDir = "$env:TEMP\obs-dl"
-          if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue }
-          New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
-
-          foreach ($fileUrl in $data.scenes) {
-              $fileName = Split-Path ([uri]$fileUrl).AbsolutePath -Leaf
-              $tmpFile  = Join-Path $tempDir $fileName
-              Write-Host "Downloading scene: $fileName"
-              Invoke-WebRequest -Uri $fileUrl -OutFile $tmpFile
-              Move-Item -Path $tmpFile -Destination (Join-Path $scenesPath $fileName) -Force
+          # Move scenes
+          Get-ChildItem -Path $stageScenes -File -ErrorAction SilentlyContinue | ForEach-Object {
+              $dest = Join-Path $destScenes $_.Name
+              Move-Item -Path $_.FullName -Destination $dest -Force -ErrorAction SilentlyContinue
+              Log "Moved scene  -> $dest"
           }
 
-          foreach ($fileUrl in $data.profiles) {
-              $fileName = Split-Path ([uri]$fileUrl).AbsolutePath -Leaf
-              $tmpFile  = Join-Path $tempDir $fileName
-              Write-Host "Downloading profile: $fileName"
-              Invoke-WebRequest -Uri $fileUrl -OutFile $tmpFile
-              Move-Item -Path $tmpFile -Destination (Join-Path $profilesPath $fileName) -Force
+          # Move profiles
+          Get-ChildItem -Path $stageProfile -File -ErrorAction SilentlyContinue | ForEach-Object {
+              $dest = Join-Path $destProfile $_.Name
+              Move-Item -Path $_.FullName -Destination $dest -Force -ErrorAction SilentlyContinue
+              Log "Moved profile -> $dest"
           }
 
-          Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+          Log "OBS files moved into: $profilePath"
+          Log "=== Done — unregistering task ==="
 
-          Write-Host "Moved OBS files into existing path:"
-          Write-Host "  Profile : $profilePath"
-          Write-Host "  Scenes  : $scenesPath"
-          Write-Host "  Profiles: $profilesPath"
+          # Delete ourselves — only needs to run once
+          schtasks /delete /tn "OBSMover" /f 2>$null | Out-Null
+          '@
+
+          $moverPath = "C:\Cloud\obs-mover.ps1"
+          New-Item -ItemType Directory -Path "C:\Cloud" -Force | Out-Null
+          $moverScript | Out-File -FilePath $moverPath -Encoding utf8
+
+          # ---------------------------------------------------------
+          # 3. Register the scheduled task (runs at every startup)
+          # ---------------------------------------------------------
+          schtasks /delete /tn "OBSMover" /f 2>$null | Out-Null
+
+          $action    = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$moverPath`""
+          $trigger   = New-ScheduledTaskTrigger -AtStartup
+          $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+          $settings  = New-ScheduledTaskSettingsSet `
+                          -AllowStartIfOnBatteries `
+                          -DontStopIfGoingOnBatteries `
+                          -StartWhenAvailable `
+                          -RestartCount 3 `
+                          -RestartInterval (New-TimeSpan -Minutes 2) `
+                          -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
+
+          Register-ScheduledTask -TaskName "OBSMover" `
+              -Action $action `
+              -Trigger $trigger `
+              -Principal $principal `
+              -Settings $settings `
+              -Force | Out-Null
+
+          Write-Host "OBS config staged at: $stageRoot"
+          Write-Host "Scheduled task 'OBSMover' registered — will move files on next boot."
 
       - name: Configure Cloud Directory & Auto Tasks
         env:
