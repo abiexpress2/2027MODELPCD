@@ -244,47 +244,35 @@ jobs:
         env:
           OBS_JSON_URL: ${{ secrets.OBS_JSON_URL }}
         run: |
-          $url = if (-not [string]::IsNullOrWhiteSpace($env:OBS_JSON_URL)) {
-              $env:OBS_JSON_URL
-          } else {
-              "***"
-          }
-      
-          $profilePath = "C:\Users\Cloud PC.runnervmvmocb"
-      
-          Write-Host "Using Windows profile: $profilePath"
-      
-          if (-not (Test-Path $profilePath)) {
-              throw "Windows user profile does not exist: $profilePath"
-          }
-      
+          $url = if (-not [string]::IsNullOrWhiteSpace($env:OBS_JSON_URL)) { $env:OBS_JSON_URL } else { "***" }
+
           Write-Host "Fetching OBS configuration from: $url"
           $data = (Invoke-WebRequest -Uri $url).Content | ConvertFrom-Json
-      
-          $scenesPath = Join-Path $profilePath "AppData\Roaming\obs-studio\basic\scenes"
+
+          # Target the real profile folder (with machine-name suffix)
+          $profilePath = "C:\Users\Cloud PC.runnervmvmocb"
+
+          $scenesPath   = Join-Path $profilePath "AppData\Roaming\obs-studio\basic\scenes"
           $profilesPath = Join-Path $profilePath "AppData\Roaming\obs-studio\basic\profiles\Untitled"
-      
-          New-Item -ItemType Directory -Force -Path $scenesPath | Out-Null
+
+          New-Item -ItemType Directory -Force -Path $scenesPath   | Out-Null
           New-Item -ItemType Directory -Force -Path $profilesPath | Out-Null
-      
+
           foreach ($fileUrl in $data.scenes) {
               $fileName = Split-Path ([uri]$fileUrl).AbsolutePath -Leaf
-              $destination = Join-Path $scenesPath $fileName
-      
               Write-Host "Downloading scene: $fileName"
-              Invoke-WebRequest -Uri $fileUrl -OutFile $destination
+              Invoke-WebRequest -Uri $fileUrl -OutFile (Join-Path -Path $scenesPath -ChildPath $fileName)
           }
-      
+
           foreach ($fileUrl in $data.profiles) {
               $fileName = Split-Path ([uri]$fileUrl).AbsolutePath -Leaf
-              $destination = Join-Path $profilesPath $fileName
-      
               Write-Host "Downloading profile: $fileName"
-              Invoke-WebRequest -Uri $fileUrl -OutFile $destination
+              Invoke-WebRequest -Uri $fileUrl -OutFile (Join-Path -Path $profilesPath -ChildPath $fileName)
           }
-      
-          Write-Host "Successfully applied OBS scenes and profiles to:"
-          Write-Host $profilePath
+
+          Write-Host "OBS scenes and profiles written to:"
+          Write-Host "  Scenes  : $scenesPath"
+          Write-Host "  Profiles: $profilesPath"
 
       - name: Configure Cloud Directory & Auto Tasks
         env:
