@@ -23,13 +23,33 @@ jobs:
     steps:
       - name: Install Dependencies
         run: |
+          set -e
           curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
           curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.list | sudo tee /etc/apt/sources.list.d/tailscale.list
           sudo apt-get update
+
+          # Core tools
           sudo apt-get install -y \
-            tailscale xvfb freerdp2-x11 \
-            pulseaudio alsa-utils libasound2-plugins \
-            xdotool openbox x11-utils netcat-openbsd
+            tailscale xvfb xdotool openbox x11-utils netcat-openbsd \
+            alsa-utils libasound2-plugins
+
+          # Try freerdp2 first (provides /usr/bin/xfreerdp), fallback to freerdp3 (provides /usr/bin/xfreerdp3)
+          if sudo apt-get install -y freerdp2-x11 2>/dev/null; then
+            echo "Installed freerdp2-x11"
+          else
+            sudo apt-get install -y freerdp3-x11
+            echo "Installed freerdp3-x11"
+          fi
+
+          # Detect which binary we actually have
+          if command -v xfreerdp >/dev/null 2>&1; then
+            echo "RDP_BIN=xfreerdp" >> $GITHUB_ENV
+          elif command -v xfreerdp3 >/dev/null 2>&1; then
+            echo "RDP_BIN=xfreerdp3" >> $GITHUB_ENV
+          else
+            echo "::error::No xfreerdp binary found"
+            exit 1
+          fi
 
       - name: Authenticate Tailscale
         run: |
@@ -71,11 +91,11 @@ jobs:
           echo "::error::Host $TARGET_IP:3389 not reachable"
           exit 1
 
-      - name: Run RDP Session
+      - name: Run RDP Session (single, end on disconnect)
         run: |
           set +e
 
-          # 1. Virtual display (1920x1080 to match login.py coordinates)
+          # 1. Virtual display
           Xvfb :99 -screen 0 1920x1080x24 -ac +extension RANDR &
           XVFB_PID=$!
           export DISPLAY=:99
@@ -91,11 +111,7 @@ jobs:
           WM_PID=$!
           sleep 2
 
-          # 3. Audio
-          pulseaudio --start --exit-idle-time=-1 >/dev/null 2>&1
-          sleep 1
-
-          # 4. Keep-alive with window focus
+          # 3. Keep-alive (focus + mouse jiggle) so the session never idles out
           (
             while true; do
               sleep 20
@@ -118,30 +134,30 @@ jobs:
           trap cleanup EXIT
 
           echo "=========================================="
-          echo "[$(date)] xfreerdp -> $TARGET_IP"
+          echo "[$(date)] Bridge starting -> $TARGET_IP"
+          echo "Binary : $RDP_BIN"
+          echo "Audio  : /audio-mode:2 (play on remote server)"
+          echo "Single session — job ends when RDP disconnects."
           echo "=========================================="
 
-          # 5. Single session — no loop, no auto-reconnect
-          xfreerdp \
+          # 4. SINGLE RDP SESSION — no reconnect loop
+          "$RDP_BIN" \
             /v:"$TARGET_IP" \
             /u:"$TARGET_USER" \
             /p:"$TARGET_PASS" \
             /size:1920x1080 \
             /bpp:32 \
-            /gdi:hw \
-            /rfx \
             /cert-ignore \
             +clipboard \
-            /dynamic-resolution \
             /network:LAN \
-            /sound:sys:pulse \
-            /audio-mode:0 \
+            /audio-mode:2 \
             /log-level:INFO \
             +async-update \
-            +fonts \
-            +aero || true
+            +fonts
 
           RC=$?
           echo "[$(date)] xfreerdp exited with code $RC"
-          echo "Cleaning up and finishing job..."
+          echo "[$(date)] RDP session closed — ending bridge job."
+
+          # Force job to finish now (cleanup runs via trap)
           exit 0
