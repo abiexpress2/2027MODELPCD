@@ -40,19 +40,30 @@ jobs:
           # Force Remote Desktop active display buffer
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "MaxInstanceCount" -Value 100 -Force
 
-          # Enable RDP Audio / Camera Redirection
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "fDisableCam" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "fDisableAudioCapture" -Value 0 -Force
+          # ============================================================
+          # --- AUDIO: keep playing even when RDP window is closed ---
+          # ============================================================
+          $rdpTcp = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+          # AudioMode = 2 -> Play on remote computer (server-side audio rendering)
+          Set-ItemProperty -Path $rdpTcp -Name "AudioMode" -Value 2 -Type DWord -Force
+          Set-ItemProperty -Path $rdpTcp -Name "fDisableCam"           -Value 0 -Type DWord -Force
+          Set-ItemProperty -Path $rdpTcp -Name "fDisableAudioCapture"  -Value 0 -Type DWord -Force
 
           $policyPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
           if (-not (Test-Path $policyPath)) { New-Item -Path $policyPath -Force | Out-Null }
-          Set-ItemProperty -Path $policyPath -Name "fDisableAudioCapture" -Value 0 -Type DWord -Force
+          Set-ItemProperty -Path $policyPath -Name "fDisableAudio"            -Value 0 -Type DWord -Force
+          Set-ItemProperty -Path $policyPath -Name "fDisableAudioCapture"     -Value 0 -Type DWord -Force
+          Set-ItemProperty -Path $policyPath -Name "fDisableCam"              -Value 0 -Type DWord -Force
+          Set-ItemProperty -Path $policyPath -Name "fDisableAudioRedirection" -Value 0 -Type DWord -Force
 
-          # Enable Windows Audio Services
+          # Enable + harden Windows Audio Services (auto-restart on crash)
           Set-Service -Name "AudioSrv" -StartupType Automatic
           Start-Service -Name "AudioSrv" -ErrorAction SilentlyContinue
           Set-Service -Name "AudioEndpointBuilder" -StartupType Automatic
           Start-Service -Name "AudioEndpointBuilder" -ErrorAction SilentlyContinue
+
+          sc.exe failure AudioSrv             reset= 0 actions= restart/1000/restart/1000/restart/1000 | Out-Null
+          sc.exe failure AudioEndpointBuilder reset= 0 actions= restart/1000/restart/1000/restart/1000 | Out-Null
 
           # Prevent power down or screen timeout
           powercfg /change monitor-timeout-ac 0
@@ -62,18 +73,32 @@ jobs:
           powercfg /change monitor-timeout-dc 0
           powercfg /change standby-timeout-dc 0
 
-          # --- Allow blank passwords everywhere (LSA) ---
+          # Allow blank passwords (harmless fallback)
           Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name "LimitBlankPasswordUse" -Value 0 -Type DWord -Force
 
           # Restart TermService
           Restart-Service -Name TermService -Force
 
-      - name: Create RDP User (No Password) & Security Policies
+      - name: Create RDP User (Password: 123456) & Security Policies
         run: |
           $userName = "Cloud PC"
+          $password = "123456"
+
+          Write-Host "::add-mask::$password"
           Write-Host "::add-mask::$userName"
 
-          # Disable local password complexity & allow blank password
+          # ---------------------------------------------------------
+          # FIX: delete stale "Cloud PC*" profile folders so Windows
+          # creates a clean "C:\Users\Cloud PC" (no .MACHINENAME suffix)
+          # ---------------------------------------------------------
+          $staleProfiles = Get-ChildItem -Path "C:\Users" -Directory -ErrorAction SilentlyContinue |
+                           Where-Object { $_.Name -like "Cloud PC*" }
+          foreach ($p in $staleProfiles) {
+              Write-Host "Removing stale profile folder: $($p.FullName)"
+              Remove-Item -Path $p.FullName -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+          # Disable local password complexity
           secedit /export /cfg "$env:TEMP\secpol.cfg"
           $cfgContent = Get-Content "$env:TEMP\secpol.cfg"
           $cfgContent = $cfgContent -replace 'PasswordComplexity = 1', 'PasswordComplexity = 0'
@@ -82,16 +107,16 @@ jobs:
           $cfgContent | Out-File -Encoding ascii "$env:TEMP\secpol.cfg"
           secedit /configure /db "$env:TEMP\secpol.sdb" /cfg "$env:TEMP\secpol.cfg" /areas SECURITYPOLICY
 
-          # --- Create Account with NO password (FIXED) ---
-          # NOTE: -NoPassword and -PasswordNeverExpires CANNOT be combined (different parameter sets).
+          # Remove old account if it exists
           $existing = Get-LocalUser -Name $userName -ErrorAction SilentlyContinue
           if ($existing) {
               Remove-LocalUser -Name $userName -ErrorAction SilentlyContinue
           }
 
-          New-LocalUser -Name $userName -NoPassword -AccountNeverExpires -ErrorAction Stop
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name $userName -Password $securePass -AccountNeverExpires -PasswordNeverExpires -ErrorAction Stop
 
-          net user "$userName" ""
+          net user "$userName" "$password"
           net user "$userName" /active:yes
           net user "$userName" /passwordchg:no
           net user "$userName" /expires:never
@@ -112,11 +137,11 @@ jobs:
 
           $sysPol = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
           if (-not (Test-Path $sysPol)) { New-Item -Path $sysPol -Force | Out-Null }
-          Set-ItemProperty -Path $sysPol -Name "InactivityTimeoutSecs"    -Value 0 -Type DWord -Force
-          Set-ItemProperty -Path $sysPol -Name "DisableLockWorkstation"   -Value 1 -Type DWord -Force
+          Set-ItemProperty -Path $sysPol -Name "InactivityTimeoutSecs"     -Value 0 -Type DWord -Force
+          Set-ItemProperty -Path $sysPol -Name "DisableLockWorkstation"    -Value 1 -Type DWord -Force
           Set-ItemProperty -Path $sysPol -Name "EnableFirstLogonAnimation" -Value 0 -Type DWord -Force
 
-          # --- Session timeouts (0 = unlimited, no logoff, no disconnect) ---
+          # --- Session timeouts (0 = unlimited) ---
           $tsPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
           if (-not (Test-Path $tsPath)) { New-Item -Path $tsPath -Force | Out-Null }
           Set-ItemProperty -Path $tsPath -Name "MaxIdleTime"            -Value 0 -Type DWord -Force
@@ -128,16 +153,16 @@ jobs:
           Set-ItemProperty -Path $tsPath -Name "fPromptForPassword"     -Value 0 -Type DWord -Force
           Set-ItemProperty -Path $tsPath -Name "fAllowToGetHelp"        -Value 0 -Type DWord -Force
 
-          # --- AutoLogon (blank password) so the desktop is always alive ---
+          # --- AutoLogon with password so the desktop is always alive ---
           $winlogon = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
           Set-ItemProperty -Path $winlogon -Name "AutoAdminLogon"    -Value "1"               -Force
           Set-ItemProperty -Path $winlogon -Name "DefaultUsername"   -Value $userName         -Force
-          Set-ItemProperty -Path $winlogon -Name "DefaultPassword"   -Value ""                -Force
+          Set-ItemProperty -Path $winlogon -Name "DefaultPassword"   -Value $password         -Force
           Set-ItemProperty -Path $winlogon -Name "DefaultDomainName" -Value $env:COMPUTERNAME -Force
           Set-ItemProperty -Path $winlogon -Name "ForceAutoLogon"    -Value "1"               -Force
           Remove-ItemProperty -Path $winlogon -Name "AutoLogonCount" -ErrorAction SilentlyContinue
 
-          # --- HKCU hive tweaks for the Cloud PC user ---
+          # --- HKCU hive tweaks (only if a fresh NTUSER.DAT exists) ---
           $userHive = "C:\Users\$userName\NTUSER.DAT"
           if (Test-Path $userHive) {
               reg load "HKU\TEMPUSER" "$userHive" 2>$null | Out-Null
@@ -162,10 +187,11 @@ jobs:
           New-Item -ItemType Directory -Path $driverDir -Force | Out-Null
           Remove-Item $driverZip -Force -ErrorAction SilentlyContinue
 
+          # --- Working mirrors only (old GitHub ones returned 404) ---
           $urls = @(
-              "https://github.com/roshkins/IddSampleDriver/raw/main/usbmmidd_v2.zip",
-              "https://github.com/itsmikethetech/Virtual-Display-Driver/releases/download/v23.10.24/usbmmidd_v2.zip",
-              "https://www.amyuni.com/downloads/usbmmidd_v2.zip"
+              "https://www.amyuni.com/downloads/usbmmidd_v2.zip",
+              "https://www.amyuni.com/downloads/usbmmidd.zip",
+              "https://github.com/itsmikethetech/Virtual-Display-Driver/releases/latest/download/usbmmidd_v2.zip"
           )
 
           $downloaded = $false
@@ -237,26 +263,44 @@ jobs:
           Write-Host "Fetching OBS configuration from: $url"
           $data = (Invoke-WebRequest -Uri $url).Content | ConvertFrom-Json
 
-          $targetUsers = @("Cloud PC")
-
-          foreach ($user in $targetUsers) {
-              $scenesPath   = "C:\Users\$user\AppData\Roaming\obs-studio\basic\scenes"
-              $profilesPath = "C:\Users\$user\AppData\Roaming\obs-studio\basic\profiles\Untitled"
-
-              New-Item -ItemType Directory -Force -Path $scenesPath   | Out-Null
-              New-Item -ItemType Directory -Force -Path $profilesPath | Out-Null
-
-              foreach ($fileUrl in $data.scenes) {
-                  $fileName = Split-Path ([uri]$fileUrl).AbsolutePath -Leaf
-                  Invoke-WebRequest -Uri $fileUrl -OutFile (Join-Path -Path $scenesPath -ChildPath $fileName)
-              }
-
-              foreach ($fileUrl in $data.profiles) {
-                  $fileName = Split-Path ([uri]$fileUrl).AbsolutePath -Leaf
-                  Invoke-WebRequest -Uri $fileUrl -OutFile (Join-Path -Path $profilesPath -ChildPath $fileName)
+          # ---------------------------------------------------------
+          # FIX: resolve the REAL profile path from the registry
+          # instead of hard-coding "C:\Users\Cloud PC"
+          # ---------------------------------------------------------
+          $profilePath = $null
+          $plRoot = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList"
+          foreach ($sidKey in Get-ChildItem $plRoot -ErrorAction SilentlyContinue) {
+              $img = (Get-ItemProperty -Path $sidKey.PSPath -Name "ProfileImagePath" -ErrorAction SilentlyContinue).ProfileImagePath
+              if ($img -and (Split-Path $img -Leaf) -like "Cloud PC*") {
+                  $profilePath = $img
+                  break
               }
           }
-          Write-Host "Successfully applied OBS scenes and profiles."
+
+          if (-not $profilePath) {
+              $profilePath = "C:\Users\Cloud PC"
+              Write-Host "Profile not in registry yet — using default: $profilePath"
+          } else {
+              Write-Host "Detected profile path from registry: $profilePath"
+          }
+
+          $scenesPath   = Join-Path $profilePath "AppData\Roaming\obs-studio\basic\scenes"
+          $profilesPath = Join-Path $profilePath "AppData\Roaming\obs-studio\basic\profiles\Untitled"
+
+          New-Item -ItemType Directory -Force -Path $scenesPath   | Out-Null
+          New-Item -ItemType Directory -Force -Path $profilesPath | Out-Null
+
+          foreach ($fileUrl in $data.scenes) {
+              $fileName = Split-Path ([uri]$fileUrl).AbsolutePath -Leaf
+              Invoke-WebRequest -Uri $fileUrl -OutFile (Join-Path -Path $scenesPath -ChildPath $fileName)
+          }
+
+          foreach ($fileUrl in $data.profiles) {
+              $fileName = Split-Path ([uri]$fileUrl).AbsolutePath -Leaf
+              Invoke-WebRequest -Uri $fileUrl -OutFile (Join-Path -Path $profilesPath -ChildPath $fileName)
+          }
+
+          Write-Host "Successfully applied OBS scenes and profiles to: $profilePath"
 
       - name: Configure Cloud Directory & Auto Tasks
         env:
@@ -270,7 +314,6 @@ jobs:
           New-Item -ItemType Directory -Path "C:\Cloud" -Force | Out-Null
           $rdpUser = "Cloud PC"
 
-          # Global Settings: allow running on battery, don't stop, auto-restart on failure
           $settings = New-ScheduledTaskSettingsSet `
               -AllowStartIfOnBatteries `
               -DontStopIfGoingOnBatteries `
@@ -339,7 +382,7 @@ jobs:
               }
           }
 
-      - name: Configure Direct Console Auto-Loop (Always GUI Active)
+      - name: Configure Direct Console Auto-Loop (Always GUI Active + Audio Alive)
         run: |
           $scriptContent = @'
           while ($true) {
@@ -349,23 +392,31 @@ jobs:
 
                   foreach ($line in $sessions) {
                       # Reconnect any disconnected user session to the physical console
+                      # (keeps both the GUI AND audio rendering alive on the server)
                       if ($line -match "^\s*\S+\s+(\d+)\s+Disc") {
                           $sid = $matches[1]
                           if ($sid -ne "0") {
                               cmd.exe /c "tscon $sid /dest:console" 2>$null
                           }
                       }
-                      # Detect whether the console (physical) session is Active
                       if ($line -match "^\s*console\s+(\d+)\s+Active") {
                           $hasConsoleActive = $true
                       }
                   }
 
-                  # If no Active console session exists, reboot — AutoAdminLogon (blank pw) recreates the desktop
+                  # If no Active console session exists, reboot — AutoAdminLogon recreates the desktop
                   if (-not $hasConsoleActive) {
                       Add-Content -Path "C:\Cloud\keepalive.log" -Value "[$(Get-Date)] No active console — rebooting"
                       cmd.exe /c "shutdown /r /t 0 /f" 2>$null
                       Start-Sleep -Seconds 120
+                  }
+
+                  # Make sure audio services are always running
+                  foreach ($svc in @("AudioSrv","AudioEndpointBuilder")) {
+                      $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
+                      if ($s -and $s.Status -ne "Running") {
+                          Start-Service -Name $svc -ErrorAction SilentlyContinue
+                      }
                   }
               } catch {
                   Add-Content -Path "C:\Cloud\keepalive.log" -Value "[$(Get-Date)] EX: $_"
@@ -432,11 +483,10 @@ jobs:
         env:
           CF_WORKER_URL: ${{ secrets.CF_WORKER_URL }}
         run: |
-          # No password — blank string is sent so the RDP client uses an empty secret
           $payload = @{
               address  = "$env:TAILSCALE_IP"
               username = "Cloud PC"
-              password = ""
+              password = "123456"
           } | ConvertTo-Json
 
           Invoke-RestMethod -Uri "$env:CF_WORKER_URL/webhook" -Method Post -Body $payload -ContentType "application/json"
@@ -446,15 +496,15 @@ jobs:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           $rdpUser = "Cloud PC"
+          $rdpPass = "123456"
 
           Write-Host "`n======================================================="
-          Write-Host "RDP ACCESS READY (NO PASSWORD)"
+          Write-Host "RDP ACCESS READY"
           Write-Host "Address  : $env:TAILSCALE_IP"
           Write-Host "Username : $rdpUser"
-          Write-Host "Password : (blank)"
+          Write-Host "Password : [PROTECTED]"
           Write-Host "=======================================================`n"
 
-          # Trigger bridge.yml using native PowerShell Invoke-RestMethod
           $headers = @{
               "Accept"               = "application/vnd.github+json"
               "Authorization"        = "Bearer $env:GH_PAT"
@@ -466,7 +516,7 @@ jobs:
               client_payload = @{
                   ip       = "$env:TAILSCALE_IP"
                   username = "$rdpUser"
-                  password = ""
+                  password = "$rdpPass"
               }
           } | ConvertTo-Json -Compress
 
@@ -479,7 +529,6 @@ jobs:
               Write-Warning "Failed to trigger dispatch event: $($_.Exception.Message)"
           }
 
-          # Watchdog loop that restarts LoginTask if the heartbeat goes stale
           $totalSeconds   = 9000
           $elapsedSeconds = 0
           $heartbeatPath  = "C:\Cloud\login.heartbeat"
