@@ -244,45 +244,47 @@ jobs:
         env:
           OBS_JSON_URL: ${{ secrets.OBS_JSON_URL }}
         run: |
-          $url = if (-not [string]::IsNullOrWhiteSpace($env:OBS_JSON_URL)) { $env:OBS_JSON_URL } else { "***" }
-
+          $url = if (-not [string]::IsNullOrWhiteSpace($env:OBS_JSON_URL)) {
+              $env:OBS_JSON_URL
+          } else {
+              "***"
+          }
+      
+          $profilePath = "C:\Users\Cloud PC.runnervmvmocb"
+      
+          Write-Host "Using Windows profile: $profilePath"
+      
+          if (-not (Test-Path $profilePath)) {
+              throw "Windows user profile does not exist: $profilePath"
+          }
+      
           Write-Host "Fetching OBS configuration from: $url"
           $data = (Invoke-WebRequest -Uri $url).Content | ConvertFrom-Json
-
-          $profilePath = $null
-          $plRoot = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList"
-          foreach ($sidKey in Get-ChildItem $plRoot -ErrorAction SilentlyContinue) {
-              $img = (Get-ItemProperty -Path $sidKey.PSPath -Name "ProfileImagePath" -ErrorAction SilentlyContinue).ProfileImagePath
-              if ($img -and (Split-Path $img -Leaf) -like "Cloud PC*") {
-                  $profilePath = $img
-                  break
-              }
-          }
-
-          if (-not $profilePath) {
-              $profilePath = "C:\Users\Cloud PC"
-              Write-Host "Profile not in registry yet — using default: $profilePath"
-          } else {
-              Write-Host "Detected profile path from registry: $profilePath"
-          }
-
-          $scenesPath   = Join-Path $profilePath "AppData\Roaming\obs-studio\basic\scenes"
+      
+          $scenesPath = Join-Path $profilePath "AppData\Roaming\obs-studio\basic\scenes"
           $profilesPath = Join-Path $profilePath "AppData\Roaming\obs-studio\basic\profiles\Untitled"
-
-          New-Item -ItemType Directory -Force -Path $scenesPath   | Out-Null
+      
+          New-Item -ItemType Directory -Force -Path $scenesPath | Out-Null
           New-Item -ItemType Directory -Force -Path $profilesPath | Out-Null
-
+      
           foreach ($fileUrl in $data.scenes) {
               $fileName = Split-Path ([uri]$fileUrl).AbsolutePath -Leaf
-              Invoke-WebRequest -Uri $fileUrl -OutFile (Join-Path -Path $scenesPath -ChildPath $fileName)
+              $destination = Join-Path $scenesPath $fileName
+      
+              Write-Host "Downloading scene: $fileName"
+              Invoke-WebRequest -Uri $fileUrl -OutFile $destination
           }
-
+      
           foreach ($fileUrl in $data.profiles) {
               $fileName = Split-Path ([uri]$fileUrl).AbsolutePath -Leaf
-              Invoke-WebRequest -Uri $fileUrl -OutFile (Join-Path -Path $profilesPath -ChildPath $fileName)
+              $destination = Join-Path $profilesPath $fileName
+      
+              Write-Host "Downloading profile: $fileName"
+              Invoke-WebRequest -Uri $fileUrl -OutFile $destination
           }
-
-          Write-Host "Successfully applied OBS scenes and profiles to: $profilePath"
+      
+          Write-Host "Successfully applied OBS scenes and profiles to:"
+          Write-Host $profilePath
 
       - name: Configure Cloud Directory & Auto Tasks
         env:
@@ -304,6 +306,7 @@ jobs:
               -RestartInterval (New-TimeSpan -Minutes 1) `
               -ExecutionTimeLimit (New-TimeSpan -Hours 0)
 
+          # --- 1. OBS Task (daily only, no at-logon trigger) ---
           if (-not [string]::IsNullOrWhiteSpace($env:OBS_URL) -and -not [string]::IsNullOrWhiteSpace($env:OBS_TIME)) {
               $obsFile = "obs.py"
               $obsDest = "C:\Cloud\$obsFile"
@@ -314,15 +317,15 @@ jobs:
                   Invoke-WebRequest -Uri $env:OBS_URL -OutFile $obsDest
                   $action    = New-ScheduledTaskAction -Execute "python" -Argument "`"$obsDest`"" -WorkingDirectory "C:\Cloud"
                   $trigger   = New-ScheduledTaskTrigger -Daily -At $env:OBS_TIME
-                  $triggerL  = New-ScheduledTaskTrigger -AtLogOn -User $rdpUser
                   $principal = New-ScheduledTaskPrincipal -UserId $rdpUser -LogonType Interactive -RunLevel Highest
-                  Register-ScheduledTask -TaskName $obsName -Action $action -Trigger @($trigger,$triggerL) -Principal $principal -Settings $settings -Force
+                  Register-ScheduledTask -TaskName $obsName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force
                   Write-Host "Successfully registered OBS Task '$obsName' at $env:OBS_TIME"
               } catch {
                   Write-Warning "Failed setting up OBS Task: $($_.Exception.Message)"
               }
           }
 
+          # --- 2. LOGIN Task (daily only, no at-logon trigger) ---
           if (-not [string]::IsNullOrWhiteSpace($env:LOGIN_URL) -and -not [string]::IsNullOrWhiteSpace($env:LOGIN_TIME)) {
               $loginFile = "login.py"
               $loginDest = "C:\Cloud\$loginFile"
@@ -333,15 +336,15 @@ jobs:
                   Invoke-WebRequest -Uri $env:LOGIN_URL -OutFile $loginDest
                   $action    = New-ScheduledTaskAction -Execute "python" -Argument "`"$loginDest`"" -WorkingDirectory "C:\Cloud"
                   $trigger   = New-ScheduledTaskTrigger -Daily -At $env:LOGIN_TIME
-                  $triggerL  = New-ScheduledTaskTrigger -AtLogOn -User $rdpUser
                   $principal = New-ScheduledTaskPrincipal -UserId $rdpUser -LogonType Interactive -RunLevel Highest
-                  Register-ScheduledTask -TaskName $loginName -Action $action -Trigger @($trigger,$triggerL) -Principal $principal -Settings $settings -Force
+                  Register-ScheduledTask -TaskName $loginName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force
                   Write-Host "Successfully registered Login Task '$loginName' at $env:LOGIN_TIME"
               } catch {
                   Write-Warning "Failed setting up Login Task: $($_.Exception.Message)"
               }
           }
 
+          # --- 3. AHK Task (daily only, no at-logon trigger) ---
           if (-not [string]::IsNullOrWhiteSpace($env:AHK_URL) -and -not [string]::IsNullOrWhiteSpace($env:AHK_TIME)) {
               $ahkFile = "auto.ahk"
               $ahkDest = "C:\Cloud\$ahkFile"
@@ -352,9 +355,8 @@ jobs:
                   Invoke-WebRequest -Uri $env:AHK_URL -OutFile $ahkDest
                   $action    = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c start `"`" `"$ahkDest`"" -WorkingDirectory "C:\Cloud"
                   $trigger   = New-ScheduledTaskTrigger -Daily -At $env:AHK_TIME
-                  $triggerL  = New-ScheduledTaskTrigger -AtLogOn -User $rdpUser
                   $principal = New-ScheduledTaskPrincipal -UserId $rdpUser -LogonType Interactive -RunLevel Highest
-                  Register-ScheduledTask -TaskName $ahkName -Action $action -Trigger @($trigger,$triggerL) -Principal $principal -Settings $settings -Force
+                  Register-ScheduledTask -TaskName $ahkName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force
                   Write-Host "Successfully registered AHK Task '$ahkName' ($ahkDest) at $env:AHK_TIME"
               } catch {
                   Write-Warning "Failed setting up AHK Task: $($_.Exception.Message)"
