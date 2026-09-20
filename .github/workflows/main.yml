@@ -249,33 +249,39 @@ jobs:
           Write-Host "Fetching OBS configuration from: $url"
           $data = (Invoke-WebRequest -Uri $url).Content | ConvertFrom-Json
 
-          # ---- Pick whichever existing profile path is present ----
           $candidates = @(
               "C:\Users\Cloud PC.runnervmvmocb",
               "C:\Users\Cloud PC"
           )
 
+          # ---- Wait up to 10 min for the profile folder to appear ----
           $profilePath = $null
-          foreach ($p in $candidates) {
-              if (Test-Path $p) {
-                  $profilePath = $p
-                  Write-Host "Using existing profile path: $profilePath"
-                  break
+          for ($i = 1; $i -le 60; $i++) {
+              foreach ($p in $candidates) {
+                  if (Test-Path $p) {
+                      $profilePath = $p
+                      break
+                  }
               }
+              if ($profilePath) { break }
+              Write-Host "[$i/60] Profile folder not present yet — waiting 10s ..."
+              Start-Sleep -Seconds 10
           }
 
           if (-not $profilePath) {
-              Write-Host "::error::Neither 'C:\Users\Cloud PC.runnervmvmocb' nor 'C:\Users\Cloud PC' exists."
-              exit 1
+              Write-Host "Profile folder never appeared — skipping OBS config (job continues)."
+              exit 0
           }
+
+          Write-Host "Using existing profile path: $profilePath"
 
           $scenesPath   = Join-Path $profilePath "AppData\Roaming\obs-studio\basic\scenes"
           $profilesPath = Join-Path $profilePath "AppData\Roaming\obs-studio\basic\profiles\Untitled"
 
-          if (-not (Test-Path $scenesPath) -or -not (Test-Path $profilesPath)) {
-              Write-Host "::error::OBS folders are missing under $profilePath."
-              exit 1
-          }
+          # Create only the obs-studio subtree INSIDE the existing profile —
+          # never the profile folder itself
+          if (-not (Test-Path $scenesPath))   { New-Item -ItemType Directory -Path $scenesPath   -Force | Out-Null }
+          if (-not (Test-Path $profilesPath)) { New-Item -ItemType Directory -Path $profilesPath -Force | Out-Null }
 
           # ---- Download to temp, then move into the existing path ----
           $tempDir = "$env:TEMP\obs-dl"
