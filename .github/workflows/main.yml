@@ -250,7 +250,7 @@ jobs:
           $data = (Invoke-WebRequest -Uri $url).Content | ConvertFrom-Json
 
           # Target the real profile folder (with machine-name suffix)
-          $profilePath = "C:\Users\Cloud PC.runnervmvmocb"
+          $profilePath = "C:\Users\Cloud PC"
 
           $scenesPath   = Join-Path $profilePath "AppData\Roaming\obs-studio\basic\scenes"
           $profilesPath = Join-Path $profilePath "AppData\Roaming\obs-studio\basic\profiles\Untitled"
