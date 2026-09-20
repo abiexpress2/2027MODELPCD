@@ -335,7 +335,7 @@ jobs:
           $action   = New-ScheduledTaskAction -Execute "powershell.exe" `
                         -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$moverPath`"" `
                         -WorkingDirectory "C:\Cloud"
-          $trigger  = New-ScheduledTaskTrigger -AtLogOn -User "Cloud PC"
+          $trigger  = New-ScheduledTaskTrigger -AtLogOn -User $rdpUser
           $settings = New-ScheduledTaskSettingsSet `
                           -AllowStartIfOnBatteries `
                           -DontStopIfGoingOnBatteries `
