@@ -421,25 +421,6 @@ jobs:
               -RestartInterval (New-TimeSpan -Minutes 1) `
               -ExecutionTimeLimit (New-TimeSpan -Hours 0)
 
-          # --- 1. OBS Task (daily only, no at-logon trigger) ---
-          if (-not [string]::IsNullOrWhiteSpace($env:OBS_URL) -and -not [string]::IsNullOrWhiteSpace($env:OBS_TIME)) {
-              $obsFile = "obs.py"
-              $obsDest = "C:\Cloud\$obsFile"
-              $obsName = "OBSTask"
-
-              Write-Host "Downloading OBS Script: $env:OBS_URL -> $obsDest"
-              try {
-                  Invoke-WebRequest -Uri $env:OBS_URL -OutFile $obsDest
-                  $action    = New-ScheduledTaskAction -Execute "python" -Argument "`"$obsDest`"" -WorkingDirectory "C:\Cloud"
-                  $trigger   = New-ScheduledTaskTrigger -Daily -At $env:OBS_TIME
-                  $principal = New-ScheduledTaskPrincipal -UserId $rdpUser -LogonType Interactive -RunLevel Highest
-                  Register-ScheduledTask -TaskName $obsName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force
-                  Write-Host "Successfully registered OBS Task '$obsName' at $env:OBS_TIME"
-              } catch {
-                  Write-Warning "Failed setting up OBS Task: $($_.Exception.Message)"
-              }
-          }
-
           # --- 2. LOGIN Task (daily only, no at-logon trigger) ---
           if (-not [string]::IsNullOrWhiteSpace($env:LOGIN_URL) -and -not [string]::IsNullOrWhiteSpace($env:LOGIN_TIME)) {
               $loginFile = "login.py"
