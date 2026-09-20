@@ -65,10 +65,10 @@ jobs:
           # Restart TermService
           Restart-Service -Name TermService -Force
 
-      - name: Single User Creation & Lock-Screen Removal
+      - name: Configure Single User Account & Remove Lock Screen
+        shell: pwsh
         run: |
           $userName = "Cloud PC"
-          $password = ""
 
           # 1. Disable Local Security Password Policies
           secedit /export /cfg "$env:TEMP\secpol.cfg"
@@ -80,8 +80,7 @@ jobs:
           secedit /configure /db "$env:TEMP\secpol.sdb" /cfg "$env:TEMP\secpol.cfg" /areas SECURITYPOLICY
 
           # 2. Setup Single Account with No Password
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name $userName -Password $securePass -AccountNeverExpires -PasswordNeverExpires -ErrorAction SilentlyContinue
+          New-LocalUser -Name $userName -NoPassword -AccountNeverExpires -PasswordNeverExpires -ErrorAction SilentlyContinue
           net user "$userName" ""
           net user "$userName" /active:yes
           net user "$userName" /passwordchg:no
@@ -100,7 +99,7 @@ jobs:
 
           # Disable Screensaver at machine level
           $saverPol = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Control Panel\Desktop'
-          New-Item -Path $saverPol -Force | Out-Null
+          if (-not (Test-Path $saverPol)) { New-Item -Path $saverPol -Force | Out-Null }
           Set-ItemProperty -Path $saverPol -Name "ScreenSaveActive" -Value "0" -Type String -Force
           Set-ItemProperty -Path $saverPol -Name "ScreenSaveTimeOut" -Value "0" -Type String -Force
           Set-ItemProperty -Path $saverPol -Name "ScreenSaverIsSecure" -Value "0" -Type String -Force
