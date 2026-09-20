@@ -250,7 +250,7 @@ jobs:
           Write-Host "Fetching OBS configuration from: $url"
           $data = (Invoke-WebRequest -Uri $url).Content | ConvertFrom-Json
 
-          # ---- 1. Stage OBS files in a neutral folder ----
+          # ---- 1. Stage OBS files ----
           $stageRoot    = "C:\Cloud\obs-stage"
           $stageScenes  = Join-Path $stageRoot "scenes"
           $stageProfile = Join-Path $stageRoot "profile"
@@ -281,30 +281,21 @@ jobs:
 
           function Log($msg) { Add-Content -Path $logFile -Value "[$(Get-Date)] $msg" }
 
-          Log "=== OBS mover started ==="
+          Log "=== OBS mover started (as $env:USERNAME) ==="
 
           $candidates = @(
+              "$env:USERPROFILE",
               "C:\Users\Cloud PC.runnervmvmocb",
               "C:\Users\Cloud PC"
-          )
+          ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
 
-          # Wait up to 20 min for a profile folder to appear
-          $profilePath = $null
-          for ($i = 1; $i -le 120; $i++) {
-              foreach ($p in $candidates) {
-                  if (Test-Path $p) { $profilePath = $p; break }
-              }
-              if ($profilePath) { break }
-              if ($i % 6 -eq 0) { Log "Still waiting for profile folder ($i/120) ..." }
-              Start-Sleep -Seconds 10
+          if (-not $candidates) {
+              Log "No profile folder found."
+              exit 1
           }
 
-          if (-not $profilePath) {
-              Log "No profile folder found after 20 min — giving up. Task stays registered."
-              exit 0
-          }
-
-          Log "Profile detected: $profilePath"
+          $profilePath = $candidates | Select-Object -First 1
+          Log "Using profile: $profilePath"
 
           $destScenes  = Join-Path $profilePath "AppData\Roaming\obs-studio\basic\scenes"
           $destProfile = Join-Path $profilePath "AppData\Roaming\obs-studio\basic\profiles\Untitled"
@@ -334,20 +325,18 @@ jobs:
           New-Item -ItemType Directory -Path "C:\Cloud" -Force | Out-Null
           $moverScript | Out-File -FilePath $moverPath -Encoding utf8
 
-          # ---- 3. Register the scheduled task with BOTH triggers ----
+          # ---- 3. Make sure Cloud PC has full access to the staging folder ----
+          icacls "C:\Cloud" /grant "Cloud PC:(OI)(CI)F" /T /Q | Out-Null
+
+          # ---- 4. Register the task to run AS the Cloud PC user ----
           & "$env:SystemRoot\System32\schtasks.exe" /delete /tn "OBSMover" /f 2>$null | Out-Null
           $global:LASTEXITCODE = 0
 
-          $action    = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$moverPath`""
-
-          # Trigger 1: at every machine startup (fires after any reboot)
-          $triggerBoot  = New-ScheduledTaskTrigger -AtStartup
-
-          # Trigger 2: at user logon (fires as soon as AutoLogon logs in Cloud PC)
-          $triggerLogon = New-ScheduledTaskTrigger -AtLogOn -User "Cloud PC"
-
-          $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-          $settings  = New-ScheduledTaskSettingsSet `
+          $action   = New-ScheduledTaskAction -Execute "powershell.exe" `
+                        -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$moverPath`"" `
+                        -WorkingDirectory "C:\Cloud"
+          $trigger  = New-ScheduledTaskTrigger -AtLogOn -User "Cloud PC"
+          $settings = New-ScheduledTaskSettingsSet `
                           -AllowStartIfOnBatteries `
                           -DontStopIfGoingOnBatteries `
                           -StartWhenAvailable `
@@ -355,32 +344,28 @@ jobs:
                           -RestartInterval (New-TimeSpan -Minutes 2) `
                           -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
 
+          # Runs as "Cloud PC", not SYSTEM — this is the key change
           Register-ScheduledTask -TaskName "OBSMover" `
               -Action $action `
-              -Trigger @($triggerBoot, $triggerLogon) `
-              -Principal $principal `
+              -Trigger $trigger `
+              -User "Cloud PC" `
+              -Password "123456" `
+              -RunLevel Highest `
               -Settings $settings `
               -Force | Out-Null
 
-          Write-Host "Task 'OBSMover' registered with AtStartup + AtLogOn triggers."
+          Write-Host "Task 'OBSMover' registered — runs as 'Cloud PC' at logon."
 
-          # ---- 4. Kick it off RIGHT NOW so it runs in this job ----
-          #     The script polls for the profile for up to 20 min, so if
-          #     AutoLogon creates the profile during this workflow, files
-          #     get moved immediately.
           Enable-ScheduledTask -TaskName "OBSMover" -ErrorAction SilentlyContinue | Out-Null
-          Start-ScheduledTask  -TaskName "OBSMover" -ErrorAction SilentlyContinue
 
-          Start-Sleep -Seconds 3
           $info = Get-ScheduledTaskInfo -TaskName "OBSMover" -ErrorAction SilentlyContinue
           if ($info) {
-              Write-Host "Task state : $((Get-ScheduledTask -TaskName 'OBSMover').State)"
-              Write-Host "Last run   : $($info.LastRunTime)"
-              Write-Host "Last result: $($info.LastTaskResult)"
+              Write-Host "State       : $((Get-ScheduledTask -TaskName 'OBSMover').State)"
+              Write-Host "Last result : $($info.LastTaskResult)"
           }
 
           Write-Host "OBS config staged at: $stageRoot"
-          Write-Host "Mover is running in the background (System task)."
+          Write-Host "Mover will run automatically when 'Cloud PC' logs in."
 
           $global:LASTEXITCODE = 0
           exit 0
