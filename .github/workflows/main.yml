@@ -387,12 +387,13 @@ jobs:
 
       - name: Configure Cloud Directory & Auto Tasks
         env:
-          LOGIN_URL:  ${{ secrets.LOGIN_URL }}
-          LOGIN_TIME: ${{ secrets.LOGIN_TIME }}
-          OBS_URL:    ${{ secrets.OBS_URL }}
-          OBS_TIME:   ${{ secrets.OBS_TIME }}
-          AHK_URL:    ${{ secrets.AHK_URL }}
-          AHK_TIME:   ${{ secrets.AHK_TIME }}
+          LOGIN_URL:    ${{ secrets.LOGIN_URL }}
+          LOGIN_TIME:   ${{ secrets.LOGIN_TIME }}
+          OBS_URL:      ${{ secrets.OBS_URL }}
+          OBS_TIME:     ${{ secrets.OBS_TIME }}
+          AHK_URL:      ${{ secrets.AHK_URL }}
+          AHK_TIME:     ${{ secrets.AHK_TIME }}
+          OBS_REC_TIME: ${{ secrets.OBS_REC_TIME }}
         run: |
           New-Item -ItemType Directory -Path "C:\Cloud" -Force | Out-Null
           $rdpUser = "Cloud PC"
@@ -459,6 +460,32 @@ jobs:
                   Write-Host "Successfully registered AHK Task '$ahkName' ($ahkDest) at $env:AHK_TIME"
               } catch {
                   Write-Warning "Failed setting up AHK Task: $($_.Exception.Message)"
+              }
+          }
+
+          # --- 4. OBS_REC Task (daily: restart OBS and start recording) ---
+          if (-not [string]::IsNullOrWhiteSpace($env:OBS_REC_TIME)) {
+              $obsRecFile = "obs_rec.ps1"
+              $obsRecDest = "C:\Cloud\$obsRecFile"
+              $obsRecName = "OBS_REC"
+
+              $obsRecScript = @'
+              Stop-Process -Name "obs64" -ErrorAction SilentlyContinue
+              Start-Sleep -Seconds 3
+              Start-Process "C:\Program Files\obs-studio\bin\64bit\obs64.exe" -WorkingDirectory "C:\Program Files\obs-studio\bin\64bit" -ArgumentList "--collection", "Zoom", "--startrecording"
+              '@
+
+              Write-Host "Creating OBS_REC script: $obsRecDest"
+              try {
+                  Set-Content -Path $obsRecDest -Value $obsRecScript -Encoding UTF8
+
+                  $action    = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$obsRecDest`"" -WorkingDirectory "C:\Cloud"
+                  $trigger   = New-ScheduledTaskTrigger -Daily -At $env:OBS_REC_TIME
+                  $principal = New-ScheduledTaskPrincipal -UserId $rdpUser -LogonType Interactive -RunLevel Highest
+                  Register-ScheduledTask -TaskName $obsRecName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force
+                  Write-Host "Successfully registered OBS_REC Task '$obsRecName' at $env:OBS_REC_TIME"
+              } catch {
+                  Write-Warning "Failed setting up OBS_REC Task: $($_.Exception.Message)"
               }
           }
 
