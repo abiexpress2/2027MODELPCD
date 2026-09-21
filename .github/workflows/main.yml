@@ -408,8 +408,6 @@ jobs:
           OBS_TIME:     ${{ secrets.OBS_TIME }}
           AHK_URL:      ${{ secrets.AHK_URL }}
           AHK_TIME:     ${{ secrets.AHK_TIME }}
-          UPLOAD_NAME:  ${{ secrets.UPLOAD_NAME }}
-          UPLOAD_FILE:  ${{ secrets.UPLOAD_FILE }}
           UPLOAD_URL:   ${{ secrets.UPLOAD_URL }}
           UPLOAD_TIME:  ${{ secrets.UPLOAD_TIME }}
           OBS_REC_TIME: ${{ secrets.OBS_REC_TIME }}
@@ -489,17 +487,20 @@ jobs:
               }
           }
 
-          # --- 5. Download and Schedule UPLOAD Task ---
-          if (-not [string]::IsNullOrWhiteSpace($env:UPLOAD_URL) -and -not [string]::IsNullOrWhiteSpace($env:UPLOAD_TIME) -and -not [string]::IsNullOrWhiteSpace($env:UPLOAD_FILE) -and -not [string]::IsNullOrWhiteSpace($env:UPLOAD_NAME)) {
-              $uploadDest = Get-TargetFilePath $env:UPLOAD_FILE
+          # --- 5. UPLOAD Task (daily only, no at-logon trigger) ---
+          if (-not [string]::IsNullOrWhiteSpace($env:UPLOAD_URL) -and -not [string]::IsNullOrWhiteSpace($env:UPLOAD_TIME)) {
+              $uploadFile = "upload.py"
+              $uploadDest = "C:\Cloud\$uploadFile"
+              $uploadName = "UploadTask"
+          
               Write-Host "Downloading Upload Script: $env:UPLOAD_URL -> $uploadDest"
               try {
                   Invoke-WebRequest -Uri $env:UPLOAD_URL -OutFile $uploadDest
-                  $action  = New-ScheduledTaskAction -Execute "python" -Argument "`"$uploadDest`"" -WorkingDirectory "C:\Cloud"
-                  $trigger = New-ScheduledTaskTrigger -Daily -At $env:UPLOAD_TIME
-                  $principal = New-ScheduledTaskPrincipal -UserId "$env:RDP_USER" -LogonType Interactive -RunLevel Highest
-                  Register-ScheduledTask -TaskName $env:UPLOAD_NAME -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force
-                  Write-Host "Successfully registered Upload Task '$env:UPLOAD_NAME' at $env:UPLOAD_TIME"
+                  $action    = New-ScheduledTaskAction -Execute "python" -Argument "`"$uploadDest`"" -WorkingDirectory "C:\Cloud"
+                  $trigger   = New-ScheduledTaskTrigger -Daily -At $env:UPLOAD_TIME
+                  $principal = New-ScheduledTaskPrincipal -UserId $rdpUser -LogonType Interactive -RunLevel Highest
+                  Register-ScheduledTask -TaskName $uploadName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force
+                  Write-Host "Successfully registered Upload Task '$uploadName' at $env:UPLOAD_TIME"
               } catch {
                   Write-Warning "Failed setting up Upload Task: $($_.Exception.Message)"
               }
