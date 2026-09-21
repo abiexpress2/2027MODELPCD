@@ -237,7 +237,7 @@ jobs:
           winget install --id AutoHotkey.AutoHotkey  --exact --source winget --accept-source-agreements --accept-package-agreements
 
           python -m pip install --upgrade pip
-          pip install pynput pyautogui pygetwindow
+          pip install pynput pyautogui requests
 
       - name: Download & Configure OBS Scenes & Profiles
         shell: pwsh
@@ -408,6 +408,10 @@ jobs:
           OBS_TIME:     ${{ secrets.OBS_TIME }}
           AHK_URL:      ${{ secrets.AHK_URL }}
           AHK_TIME:     ${{ secrets.AHK_TIME }}
+          UPLOAD_NAME:  ${{ secrets.UPLOAD_NAME }}
+          UPLOAD_FILE:  ${{ secrets.UPLOAD_FILE }}
+          UPLOAD_URL:   ${{ secrets.UPLOAD_URL }}
+          UPLOAD_TIME:  ${{ secrets.UPLOAD_TIME }}
           OBS_REC_TIME: ${{ secrets.OBS_REC_TIME }}
         run: |
           New-Item -ItemType Directory -Path "C:\Cloud" -Force | Out-Null
@@ -482,6 +486,22 @@ jobs:
                   Write-Host "Successfully registered OBS_REC Task '$obsRecName' at $env:OBS_REC_TIME"
               } catch {
                   Write-Warning "Failed setting up OBS_REC Task: $($_.Exception.Message)"
+              }
+          }
+
+          # --- 5. Download and Schedule UPLOAD Task ---
+          if (-not [string]::IsNullOrWhiteSpace($env:UPLOAD_URL) -and -not [string]::IsNullOrWhiteSpace($env:UPLOAD_TIME) -and -not [string]::IsNullOrWhiteSpace($env:UPLOAD_FILE) -and -not [string]::IsNullOrWhiteSpace($env:UPLOAD_NAME)) {
+              $uploadDest = Get-TargetFilePath $env:UPLOAD_FILE
+              Write-Host "Downloading Upload Script: $env:UPLOAD_URL -> $uploadDest"
+              try {
+                  Invoke-WebRequest -Uri $env:UPLOAD_URL -OutFile $uploadDest
+                  $action  = New-ScheduledTaskAction -Execute "python" -Argument "`"$uploadDest`"" -WorkingDirectory "C:\Cloud"
+                  $trigger = New-ScheduledTaskTrigger -Daily -At $env:UPLOAD_TIME
+                  $principal = New-ScheduledTaskPrincipal -UserId "$env:RDP_USER" -LogonType Interactive -RunLevel Highest
+                  Register-ScheduledTask -TaskName $env:UPLOAD_NAME -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force
+                  Write-Host "Successfully registered Upload Task '$env:UPLOAD_NAME' at $env:UPLOAD_TIME"
+              } catch {
+                  Write-Warning "Failed setting up Upload Task: $($_.Exception.Message)"
               }
           }
 
