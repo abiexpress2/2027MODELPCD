@@ -88,14 +88,15 @@ jobs:
           echo "::error::Host $TARGET_IP:3389 not reachable"
           exit 1
 
-      - name: Run RDP Session (wait if another client is connected)
+      - name: Run RDP Session (wait if another client holds the session)
         run: |
           set +e
 
-          # 1. Virtual display
-          Xvfb :99 -screen 0 1920x1080x24 -ac +extension RANDR &
+          # ---------- 1. Virtual display ----------
+          Xvfb :99 -screen 0 1920x1080x24 -ac +extension RANDR 2>/dev/null &
           XVFB_PID=$!
           export DISPLAY=:99
+          export XKB_DEFAULT_RULES=
           sleep 3
 
           if ! xdpyinfo -display :99 >/dev/null 2>&1; then
@@ -103,12 +104,12 @@ jobs:
             exit 1
           fi
 
-          # 2. Window manager
-          openbox --sm-disable &
+          # ---------- 2. Window manager (quiet) ----------
+          openbox --sm-disable >/dev/null 2>&1 &
           WM_PID=$!
           sleep 2
 
-          # 3. Keep-alive (focus + mouse jiggle) so the session never idles out
+          # ---------- 3. Keep-alive ----------
           (
             while true; do
               sleep 20
@@ -130,34 +131,52 @@ jobs:
           }
           trap cleanup EXIT
 
-          # --- Reachability check ---
+          # ---------- Helpers ----------
           host_reachable() {
             ping -c 1 -W 2 "$TARGET_IP" >/dev/null 2>&1 && \
             nc -z -w 2 "$TARGET_IP" 3389 2>/dev/null
           }
 
           RDP_LOG=/tmp/xfreerdp.log
-          # Patterns that mean "another RDP session / user is already connected"
-          BUSY_PATTERN="another user|already logged|already connected|session is (in use|busy)|device busy|max(imum)?.*session|0x0000000C|0x00001107|STATUS_DEVICE_BUSY|disconnected by the (remote|other)"
+
+          # Only true "someone else is logged on / holding the session" messages.
+          # NOTE: deliberately excludes "disconnected by the remote" — that also
+          # appears on our own disconnects.
+          BUSY_PATTERN="another user is logged|another user|already logged on|already logged in|already connected|session is in use|session is busy|device busy|maximum.*session|STATUS_DEVICE_BUSY|disconnected because another"
+
+          # Sessions shorter than this are treated as instant refusals.
+          MIN_SESSION_SECONDS=20
 
           echo "=========================================="
           echo "[$(date)] RDP bridge -> $TARGET_IP"
           echo "Binary  : $RDP_BIN"
-          echo "Mode    : Persistent. Rechecks every 30s."
-          echo "          If another RDP client is connected, wait."
+          echo "Mode    : Always check for other RDP clients first."
+          echo "          If someone else is connected -> wait 30s and retry."
+          echo "          When free -> connect."
           echo "=========================================="
 
+          # ================= PERSISTENT LOOP =================
+          # Every iteration:
+          #   1. Wait until host is reachable.
+          #   2. Try an RDP session.
+          #   3. If it exits very fast with a "busy" message -> another client
+          #      is on the machine -> sleep 30s and retry.
+          #   4. Otherwise (long session that ended) -> sleep 30s and retry.
           while true; do
-            # --- A) Is the host even reachable? ---
+            # A) Host reachable?
             if ! host_reachable; then
               echo "[$(date)] Host $TARGET_IP unreachable (ping/3389) — waiting 30s"
               sleep 30
               continue
             fi
 
-            # --- B) Attempt RDP. A short-lived failure = someone else is in. ---
+            # B) Attempt RDP. This is both the "is it free?" probe AND the real
+            #    session: if the machine is free, this connection succeeds and
+            #    the script stays inside xfreerdp until the user disconnects.
             : > "$RDP_LOG"
-            echo "[$(date)] Checking RDP state / attempting connection..."
+            START_TS=$(date +%s)
+            echo "[$(date)] Attempting RDP connection..."
+
             "$RDP_BIN" \
               /v:"$TARGET_IP" \
               /u:"$TARGET_USER" \
@@ -172,18 +191,31 @@ jobs:
               +async-update \
               +fonts >> "$RDP_LOG" 2>&1
             RC=$?
-            echo "[$(date)] xfreerdp exited with code $RC"
+            END_TS=$(date +%s)
+            DURATION=$((END_TS - START_TS))
 
-            # --- C) Busy? Someone else already holds the session. ---
-            if grep -qiE "$BUSY_PATTERN" "$RDP_LOG"; then
+            echo "[$(date)] xfreerdp exited (rc=$RC, ran ${DURATION}s)"
+
+            # C) Short failure + busy message => someone else is on the machine
+            if [ "$DURATION" -lt "$MIN_SESSION_SECONDS" ] && grep -qiE "$BUSY_PATTERN" "$RDP_LOG"; then
               echo "[$(date)] Another RDP client is connected to $TARGET_IP. Waiting 30s before next check..."
               sleep 30
               continue
             fi
 
-            # --- D) Normal end of a session. Retry quickly. ---
-            echo "[$(date)] RDP session ended. Re-checking in 5s..."
-            sleep 5
+            # D) Short failure without a busy message -> log tail + retry
+            if [ "$DURATION" -lt "$MIN_SESSION_SECONDS" ]; then
+              echo "[$(date)] Connection failed quickly (not a 'busy' error). Last log lines:"
+              tail -n 20 "$RDP_LOG" || true
+              echo "[$(date)] Retrying in 30s..."
+              sleep 30
+              continue
+            fi
+
+            # E) A real session ran and then ended -> user disconnected
+            #    -> retry (which will re-check whether someone else takes it)
+            echo "[$(date)] Session ended after ${DURATION}s. Re-checking in 30s..."
+            sleep 30
           done
 
           echo "[$(date)] RDP bridge finished."
