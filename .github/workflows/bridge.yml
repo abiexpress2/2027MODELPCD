@@ -28,10 +28,12 @@ jobs:
           curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.list | sudo tee /etc/apt/sources.list.d/tailscale.list
           sudo apt-get update
 
+          # Core tools
           sudo apt-get install -y \
             tailscale xvfb xdotool openbox x11-utils netcat-openbsd \
             alsa-utils libasound2-plugins
 
+          # Try freerdp2 first (provides /usr/bin/xfreerdp), fallback to freerdp3 (provides /usr/bin/xfreerdp3)
           if sudo apt-get install -y freerdp2-x11 2>/dev/null; then
             echo "Installed freerdp2-x11"
           else
@@ -39,6 +41,7 @@ jobs:
             echo "Installed freerdp3-x11"
           fi
 
+          # Detect which binary we actually have
           if command -v xfreerdp >/dev/null 2>&1; then
             echo "RDP_BIN=xfreerdp" >> $GITHUB_ENV
           elif command -v xfreerdp3 >/dev/null 2>&1; then
@@ -88,28 +91,14 @@ jobs:
           echo "::error::Host $TARGET_IP:3389 not reachable"
           exit 1
 
-      - name: Run RDP Session (non-intrusive; waits long between attempts)
+      - name: Run RDP Session (single, end on disconnect)
         run: |
           set +e
 
-          # ================== CONFIG ==================
-          # How long to wait between connection attempts (seconds).
-          # HIGH value = bridge almost never touches your PC.
-          #   - 60   = aggressive (what you had — kicked you every 30s)
-          #   - 300  = safe (5 min between attempts)
-          #   - 600  = very safe (10 min)
-          RETRY_WAIT=300
-
-          # Sessions shorter than this are considered "quick failures"
-          # (e.g. Windows refused because you're already on).
-          QUICK_FAIL_SECONDS=25
-          # ============================================
-
           # 1. Virtual display
-          Xvfb :99 -screen 0 1920x1080x24 -ac +extension RANDR 2>/dev/null &
+          Xvfb :99 -screen 0 1920x1080x24 -ac +extension RANDR &
           XVFB_PID=$!
           export DISPLAY=:99
-          export XKB_DEFAULT_RULES=
           sleep 3
 
           if ! xdpyinfo -display :99 >/dev/null 2>&1; then
@@ -117,12 +106,12 @@ jobs:
             exit 1
           fi
 
-          # 2. Window manager (quiet)
-          openbox --sm-disable >/dev/null 2>&1 &
+          # 2. Window manager
+          openbox --sm-disable &
           WM_PID=$!
           sleep 2
 
-          # 3. Keep-alive
+          # 3. Keep-alive (focus + mouse jiggle) so the session never idles out
           (
             while true; do
               sleep 20
@@ -144,75 +133,31 @@ jobs:
           }
           trap cleanup EXIT
 
-          # ---------- Helpers ----------
-          host_reachable() {
-            ping -c 1 -W 2 "$TARGET_IP" >/dev/null 2>&1 && \
-            nc -z -w 2 "$TARGET_IP" 3389 2>/dev/null
-          }
-
-          RDP_LOG=/tmp/xfreerdp.log
-
-          # Strict busy patterns only.
-          BUSY_PATTERN="another user|already logged on|already logged in|session is in use|session is busy|device busy|maximum.*session|STATUS_DEVICE_BUSY|disconnected because another|disconnected by the (administrator|other user)"
-
           echo "=========================================="
-          echo "[$(date)] RDP bridge -> $TARGET_IP"
-          echo "Binary  : $RDP_BIN"
-          echo "Retry   : ${RETRY_WAIT}s between attempts"
-          echo "Policy  : If you are already on the PC, the bridge will"
-          echo "          wait and will NOT keep probing every few seconds."
+          echo "[$(date)] Bridge starting -> $TARGET_IP"
+          echo "Binary : $RDP_BIN"
+          echo "Audio  : /audio-mode:2 (play on remote server)"
+          echo "Single session — job ends when RDP disconnects."
           echo "=========================================="
 
-          # ================= PERSISTENT LOOP =================
-          while true; do
-            # A) Host reachable?
-            if ! host_reachable; then
-              echo "[$(date)] Host $TARGET_IP unreachable — waiting ${RETRY_WAIT}s"
-              sleep $RETRY_WAIT
-              continue
-            fi
+          # 4. SINGLE RDP SESSION — no reconnect loop
+          "$RDP_BIN" \
+            /v:"$TARGET_IP" \
+            /u:"$TARGET_USER" \
+            /p:"$TARGET_PASS" \
+            /size:1920x1080 \
+            /bpp:32 \
+            /cert-ignore \
+            +clipboard \
+            /network:LAN \
+            /audio-mode:2 \
+            /log-level:INFO \
+            +async-update \
+            +fonts
 
-            # B) Attempt RDP.
-            : > "$RDP_LOG"
-            START_TS=$(date +%s)
-            echo "[$(date)] Attempting RDP connection..."
+          RC=$?
+          echo "[$(date)] xfreerdp exited with code $RC"
+          echo "[$(date)] RDP session closed — ending bridge job."
 
-            "$RDP_BIN" \
-              /v:"$TARGET_IP" \
-              /u:"$TARGET_USER" \
-              /p:"$TARGET_PASS" \
-              /size:1920x1080 \
-              /bpp:32 \
-              /cert-ignore \
-              +clipboard \
-              /network:LAN \
-              /audio-mode:2 \
-              /log-level:INFO \
-              +async-update \
-              +fonts >> "$RDP_LOG" 2>&1
-            RC=$?
-            END_TS=$(date +%s)
-            DURATION=$((END_TS - START_TS))
-
-            echo "[$(date)] xfreerdp exited (rc=$RC, ran ${DURATION}s)"
-
-            # C) Classify the outcome
-            if [ "$DURATION" -lt "$QUICK_FAIL_SECONDS" ]; then
-              # Quick failure. Could be a busy refusal, or auth/network issue.
-              if grep -qiE "$BUSY_PATTERN" "$RDP_LOG"; then
-                echo "[$(date)] Another RDP client is on $TARGET_IP — NOT disturbing. Waiting ${RETRY_WAIT}s."
-              else
-                echo "[$(date)] Quick failure (rc=$RC). Last lines:"
-                tail -n 10 "$RDP_LOG" || true
-                echo "[$(date)] Waiting ${RETRY_WAIT}s before retry."
-              fi
-            else
-              # A real session ran, then ended (you disconnected, network blip, etc.)
-              echo "[$(date)] Session ran for ${DURATION}s then ended. Waiting ${RETRY_WAIT}s before re-checking."
-            fi
-
-            sleep $RETRY_WAIT
-          done
-
-          echo "[$(date)] RDP bridge finished."
+          # Force job to finish now (cleanup runs via trap)
           exit 0
