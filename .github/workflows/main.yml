@@ -21,9 +21,12 @@ jobs:
 
           # Edge AutoLaunch Protocol Policy for Zoom (Expanded Origins)
           $zoomOrigins = '[{"allowed_origins":["https://zoom.us","https://www.zoom.us","https://us02web.zoom.us","https://us03web.zoom.us","https://us04web.zoom.us","https://us05web.zoom.us","https://us06web.zoom.us","https://us07web.zoom.us","https://us08web.zoom.us","https://us09web.zoom.us","https://us10web.zoom.us","https://us11web.zoom.us","https://us12web.zoom.us","https://us13web.zoom.us","https://us14web.zoom.us","https://us15web.zoom.us","https://us16web.zoom.us","https://us17web.zoom.us","https://us18web.zoom.us","https://us19web.zoom.us","https://us20web.zoom.us"],"protocol":"zoommtg"}]'
-
+          
           New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -Force | Out-Null
           Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -Name 'AutoLaunchProtocolsFromOrigins' -Type String -Value $zoomOrigins -Force
+
+          # Zoom Meetings: automatically enter full screen when joining
+          New-Item -Path "HKCU:\SOFTWARE\Policies\Zoom\Zoom Meetings\Meetings" -Force | Out-Null; New-ItemProperty -Path "HKCU:\SOFTWARE\Policies\Zoom\Zoom Meetings\Meetings" -Name "EnterFullScreenWhenJoinMeeting" -PropertyType DWord -Value 1 -Force
 
           # Enable RDP & Firewall
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
@@ -422,27 +425,27 @@ jobs:
               -RestartCount 999 `
               -RestartInterval (New-TimeSpan -Minutes 1) `
               -ExecutionTimeLimit (New-TimeSpan -Hours 0)
-
-          # --- 2. LOGIN Task (daily only, no at-logon trigger) ---
+          
+          # --- 1. Login Task (daily only, no at-logon trigger) ---
           if (-not [string]::IsNullOrWhiteSpace($env:LOGIN_URL) -and -not [string]::IsNullOrWhiteSpace($env:LOGIN_TIME)) {
-              $loginFile = "login.py"
+              $loginFile = "login.ahk"
               $loginDest = "C:\Cloud\$loginFile"
               $loginName = "LoginTask"
-
+          
               Write-Host "Downloading Login Script: $env:LOGIN_URL -> $loginDest"
               try {
                   Invoke-WebRequest -Uri $env:LOGIN_URL -OutFile $loginDest
-                  $action    = New-ScheduledTaskAction -Execute "python" -Argument "`"$loginDest`"" -WorkingDirectory "C:\Cloud"
+                  $action    = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c start `"`" `"$loginDest`"" -WorkingDirectory "C:\Cloud"
                   $trigger   = New-ScheduledTaskTrigger -Daily -At $env:LOGIN_TIME
                   $principal = New-ScheduledTaskPrincipal -UserId $rdpUser -LogonType Interactive -RunLevel Highest
                   Register-ScheduledTask -TaskName $loginName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force
-                  Write-Host "Successfully registered Login Task '$loginName' at $env:LOGIN_TIME"
+                  Write-Host "Successfully registered Login Task '$loginName' ($loginDest) at $env:LOGIN_TIME"
               } catch {
                   Write-Warning "Failed setting up Login Task: $($_.Exception.Message)"
               }
           }
-
-          # --- 3. AHK Task (daily only, no at-logon trigger) ---
+          
+          # --- 2. AHK Task (daily only, no at-logon trigger) ---
           if (-not [string]::IsNullOrWhiteSpace($env:AHK_URL) -and -not [string]::IsNullOrWhiteSpace($env:AHK_TIME)) {
               $ahkFile = "auto.ahk"
               $ahkDest = "C:\Cloud\$ahkFile"
@@ -461,7 +464,7 @@ jobs:
               }
           }
 
-          # --- 4. OBS_REC Task (daily: restart OBS and start recording) ---
+          # --- 3. OBS_REC Task (daily: restart OBS and start recording) ---
           if (-not [string]::IsNullOrWhiteSpace($env:OBS_REC_TIME)) {
               $obsRecFile = "obs_rec.ps1"
               $obsRecDest = "C:\Cloud\$obsRecFile"
@@ -487,7 +490,7 @@ jobs:
               }
           }
 
-          # --- 5. UPLOAD Task (daily only, no at-logon trigger) ---
+          # --- 4. UPLOAD Task (daily only, no at-logon trigger) ---
           if (-not [string]::IsNullOrWhiteSpace($env:UPLOAD_URL) -and -not [string]::IsNullOrWhiteSpace($env:UPLOAD_TIME)) {
               $uploadFile = "upload.py"
               $uploadDest = "C:\Cloud\$uploadFile"
