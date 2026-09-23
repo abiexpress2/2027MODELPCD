@@ -25,8 +25,6 @@ jobs:
           New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -Force | Out-Null
           Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -Name 'AutoLaunchProtocolsFromOrigins' -Type String -Value $zoomOrigins -Force
 
-          # Zoom Meetings: automatically enter full screen when joining
-          New-Item -Path "HKCU:\SOFTWARE\Policies\Zoom\Zoom Meetings\Meetings" -Force | Out-Null; New-ItemProperty -Path "HKCU:\SOFTWARE\Policies\Zoom\Zoom Meetings\Meetings" -Name "EnterFullScreenWhenJoinMeeting" -PropertyType DWord -Value 1 -Force
 
           # Enable RDP & Firewall
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
@@ -240,7 +238,7 @@ jobs:
           winget install --id AutoHotkey.AutoHotkey  --exact --source winget --accept-source-agreements --accept-package-agreements
 
           python -m pip install --upgrade pip
-          pip install pynput pyautogui requests requests-toolbelt
+          pip install requests requests-toolbelt
 
       - name: Download & Configure OBS Scenes & Profiles
         shell: pwsh
@@ -248,6 +246,10 @@ jobs:
           OBS_JSON_URL: ${{ secrets.OBS_JSON_URL }}
           OBS_TIME:     ${{ secrets.OBS_TIME }}
         run: |
+         
+          # Zoom Meetings: automatically enter full screen when joining
+          New-Item -Path "HKCU:\SOFTWARE\Policies\Zoom\Zoom Meetings\Meetings" -Force | Out-Null; New-ItemProperty -Path "HKCU:\SOFTWARE\Policies\Zoom\Zoom Meetings\Meetings" -Name "EnterFullScreenWhenJoinMeeting" -PropertyType DWord -Value 1 -Force
+
           $ErrorActionPreference = 'Continue'
           $rdpUser = "Cloud PC"
           $url = if (-not [string]::IsNullOrWhiteSpace($env:OBS_JSON_URL)) { $env:OBS_JSON_URL } else { "***" }
