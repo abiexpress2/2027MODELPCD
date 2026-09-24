@@ -506,7 +506,7 @@ jobs:
               }
           }
 
-      - name: Configure Direct Console Auto-Loop (Always GUI Active + Audio Alive + Zoom Policy)
+      - name: Configure Direct Console Auto-Loop
         run: |
           $scriptContent = @'
           $zoomPath = "HKCU:\SOFTWARE\Policies\Zoom\Zoom Meetings\Meetings"
