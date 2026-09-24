@@ -506,55 +506,110 @@ jobs:
               }
           }
 
-      - name: Configure Direct Console Auto-Loop (Always GUI Active + Audio Alive)
-        run: |
-          $scriptContent = @'
-          while ($true) {
-              try {
-                  $sessions = qwinsta 2>$null
-                  $hasConsoleActive = $false
-
-                  foreach ($line in $sessions) {
-                      if ($line -match "^\s*\S+\s+(\d+)\s+Disc") {
-                          $sid = $matches[1]
-                          if ($sid -ne "0") {
-                              cmd.exe /c "tscon $sid /dest:console" 2>$null
+          - name: Configure Zoom and Direct Console Auto-Loop
+            shell: powershell
+            run: |
+              # 1. Configure Zoom first
+              $zoomPath = "HKCU:\SOFTWARE\Policies\Zoom\Zoom Meetings\Meetings"
+          
+              New-Item -Path $zoomPath -Force | Out-Null
+          
+              New-ItemProperty `
+                -Path $zoomPath `
+                -Name "EnterFullScreenWhenJoinMeeting" `
+                -PropertyType DWord `
+                -Value 1 `
+                -Force | Out-Null
+          
+              # 2. Create the keep-alive PowerShell script
+              $scriptContent = @'
+              while ($true) {
+                  try {
+                      $sessions = qwinsta 2>$null
+                      $hasConsoleActive = $false
+          
+                      foreach ($line in $sessions) {
+          
+                          if ($line -match "^\s*\S+\s+(\d+)\s+Disc") {
+                              $sid = $matches[1]
+          
+                              if ($sid -ne "0") {
+                                  cmd.exe /c "tscon $sid /dest:console" 2>$null
+                              }
+                          }
+          
+                          if ($line -match "^\s*console\s+(\d+)\s+Active") {
+                              $hasConsoleActive = $true
                           }
                       }
-                      if ($line -match "^\s*console\s+(\d+)\s+Active") {
-                          $hasConsoleActive = $true
+          
+                      if (-not $hasConsoleActive) {
+                          Add-Content `
+                            -Path "C:\Cloud\keepalive.log" `
+                            -Value "[$(Get-Date)] No active console — rebooting"
+          
+                          cmd.exe /c "shutdown /r /t 0 /f" 2>$null
+          
+                          Start-Sleep -Seconds 120
+                      }
+          
+                      foreach ($svc in @("AudioSrv", "AudioEndpointBuilder")) {
+                          $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
+          
+                          if ($s -and $s.Status -ne "Running") {
+                              Start-Service -Name $svc -ErrorAction SilentlyContinue
+                          }
                       }
                   }
-
-                  if (-not $hasConsoleActive) {
-                      Add-Content -Path "C:\Cloud\keepalive.log" -Value "[$(Get-Date)] No active console — rebooting"
-                      cmd.exe /c "shutdown /r /t 0 /f" 2>$null
-                      Start-Sleep -Seconds 120
+                  catch {
+                      Add-Content `
+                        -Path "C:\Cloud\keepalive.log" `
+                        -Value "[$(Get-Date)] EX: $_"
                   }
-
-                  foreach ($svc in @("AudioSrv","AudioEndpointBuilder")) {
-                      $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
-                      if ($s -and $s.Status -ne "Running") {
-                          Start-Service -Name $svc -ErrorAction SilentlyContinue
-                      }
-                  }
-              } catch {
-                  Add-Content -Path "C:\Cloud\keepalive.log" -Value "[$(Get-Date)] EX: $_"
+          
+                  Start-Sleep -Seconds 5
               }
-              Start-Sleep -Seconds 5
-          }
-          '@
-
-          $scriptPath = "C:\KeepScreenAlive.ps1"
-          New-Item -ItemType Directory -Path "C:\Cloud" -Force | Out-Null
-          $scriptContent | Out-File -FilePath $scriptPath -Encoding utf8
-
-          $action    = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File $scriptPath"
-          $trigger   = New-ScheduledTaskTrigger -AtStartup
-          $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-
-          Register-ScheduledTask -TaskName "KeepScreenAliveTask" -Action $action -Trigger $trigger -Principal $principal -Force
-          Start-ScheduledTask -TaskName "KeepScreenAliveTask"
+              '@
+          
+              $scriptPath = "C:\KeepScreenAlive.ps1"
+          
+              New-Item `
+                -ItemType Directory `
+                -Path "C:\Cloud" `
+                -Force | Out-Null
+          
+              $scriptContent |
+                Out-File `
+                  -FilePath $scriptPath `
+                  -Encoding utf8 `
+                  -Force
+          
+              # 3. Create scheduled task with administrator-level SYSTEM privileges
+              $action = New-ScheduledTaskAction `
+                -Execute "powershell.exe" `
+                -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`""
+          
+              $trigger = New-ScheduledTaskTrigger -AtStartup
+          
+              $principal = New-ScheduledTaskPrincipal `
+                -UserId "NT AUTHORITY\SYSTEM" `
+                -LogonType ServiceAccount `
+                -RunLevel Highest
+          
+              Register-ScheduledTask `
+                -TaskName "KeepScreenAliveTask" `
+                -Action $action `
+                -Trigger $trigger `
+                -Principal $principal `
+                -Force
+          
+              # 4. Start it immediately
+              Start-ScheduledTask -TaskName "KeepScreenAliveTask"
+          
+              # 5. Verify
+              Get-ScheduledTask `
+                -TaskName "KeepScreenAliveTask" |
+                Select-Object TaskName, State
 
       - name: Install & Connect Tailscale
         run: |
