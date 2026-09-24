@@ -25,7 +25,6 @@ jobs:
           New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -Force | Out-Null
           Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -Name 'AutoLaunchProtocolsFromOrigins' -Type String -Value $zoomOrigins -Force
 
-
           # Enable RDP & Firewall
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
@@ -246,10 +245,6 @@ jobs:
           OBS_JSON_URL: ${{ secrets.OBS_JSON_URL }}
           OBS_TIME:     ${{ secrets.OBS_TIME }}
         run: |
-         
-          # Zoom Meetings: automatically enter full screen when joining
-          New-Item -Path "HKCU:\SOFTWARE\Policies\Zoom\Zoom Meetings\Meetings" -Force | Out-Null; New-ItemProperty -Path "HKCU:\SOFTWARE\Policies\Zoom\Zoom Meetings\Meetings" -Name "EnterFullScreenWhenJoinMeeting" -PropertyType DWord -Value 1 -Force
-
           $ErrorActionPreference = 'Continue'
           $rdpUser = "Cloud PC"
           $url = if (-not [string]::IsNullOrWhiteSpace($env:OBS_JSON_URL)) { $env:OBS_JSON_URL } else { "***" }
