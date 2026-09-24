@@ -556,7 +556,9 @@ jobs:
 
           $scriptPath = "C:\KeepScreenAlive.ps1"
           New-Item -ItemType Directory -Path "C:\Cloud" -Force | Out-Null
-          $scriptContent \vert{} Out-File -FilePath$scriptPath -Encoding utf8
+          
+          # Using .Net File writing to completely avoid any pipe/parser translation bugs
+          [System.IO.File]::WriteAllText($scriptPath, $scriptContent, [System.Text.UTF8Encoding]::new($false))
 
           $action     = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File $scriptPath"
           $trigger    = New-ScheduledTaskTrigger -AtStartup$principal  = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
