@@ -506,64 +506,224 @@ jobs:
               }
           }
 
-      - name: Configure Direct Console Auto-Loop (Always GUI Active + Audio Alive + Zoom Policy)
+      - name: Configure Zoom Login + Direct Console Auto-Loop
+        shell: powershell
         run: |
-          $scriptContent = @'
+      
+          # ============================================================
+          # 1. CREATE ZOOM FULLSCREEN PS1 SCRIPT
+          # ============================================================
+      
+          $zoomScriptPath = "C:\Configure-ZoomFullscreen.ps1"
+      
+          $zoomScript = @'
           $zoomPath = "HKCU:\SOFTWARE\Policies\Zoom\Zoom Meetings\Meetings"
+      
           New-Item -Path $zoomPath -Force | Out-Null
+      
           New-ItemProperty `
             -Path $zoomPath `
             -Name "EnterFullScreenWhenJoinMeeting" `
             -PropertyType DWord `
             -Value 1 `
             -Force | Out-Null
-
+      
+          Write-Host "[+] Zoom Fullscreen Registry Policy applied." -ForegroundColor Green
+          '@
+      
+          $zoomScript |
+            Out-File `
+              -FilePath $zoomScriptPath `
+              -Encoding UTF8 `
+              -Force
+      
+          Write-Host "[+] Created Zoom PS1: $zoomScriptPath" -ForegroundColor Green
+      
+      
+          # ============================================================
+          # 2. CREATE ZOOM TASK TO RUN AT WINDOWS USER LOGIN
+          # ============================================================
+      
+          $zoomAction = New-ScheduledTaskAction `
+            -Execute "powershell.exe" `
+            -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$zoomScriptPath`""
+      
+          $zoomTrigger = New-ScheduledTaskTrigger -AtLogOn
+      
+          $zoomPrincipal = New-ScheduledTaskPrincipal `
+            -UserId "$env:USERDOMAIN\$env:USERNAME" `
+            -LogonType Interactive `
+            -RunLevel Highest
+      
+          Register-ScheduledTask `
+            -TaskName "ConfigureZoomFullscreenAtLogin" `
+            -Action $zoomAction `
+            -Trigger $zoomTrigger `
+            -Principal $zoomPrincipal `
+            -Force
+      
+          Write-Host "[+] Zoom login task created." -ForegroundColor Green
+      
+      
+          # ============================================================
+          # 3. RUN ZOOM SCRIPT ONCE NOW
+          # ============================================================
+      
+          powershell.exe `
+            -NoProfile `
+            -ExecutionPolicy Bypass `
+            -File $zoomScriptPath
+      
+          Write-Host "[+] Zoom Fullscreen configuration executed now." -ForegroundColor Green
+      
+      
+          # ============================================================
+          # 4. CREATE KEEP-SCREEN-ALIVE PS1 SCRIPT
+          # ============================================================
+      
+          $keepAliveScriptPath = "C:\KeepScreenAlive.ps1"
+      
+          New-Item `
+            -ItemType Directory `
+            -Path "C:\Cloud" `
+            -Force | Out-Null
+      
+          $keepAliveScript = @'
           while ($true) {
               try {
+      
                   $sessions = qwinsta 2>$null
-                  $hasConsoleActive =$false
-
-                  foreach ($line in$sessions) {
+                  $hasConsoleActive = $false
+      
+                  foreach ($line in $sessions) {
+      
                       if ($line -match "^\s*\S+\s+(\d+)\s+Disc") {
-                          $sid =$matches[1]
+      
+                          $sid = $matches[1]
+      
                           if ($sid -ne "0") {
                               cmd.exe /c "tscon $sid /dest:console" 2>$null
                           }
                       }
+      
                       if ($line -match "^\s*console\s+(\d+)\s+Active") {
-                          $hasConsoleActive =$true
+                          $hasConsoleActive = $true
                       }
                   }
-
+      
+      
+                  # ----------------------------------------------------
+                  # Check active console
+                  # ----------------------------------------------------
+      
                   if (-not $hasConsoleActive) {
-                      Add-Content -Path "C:\Cloud\keepalive.log" -Value "[$(Get-Date)] No active console — rebooting"
+      
+                      Add-Content `
+                        -Path "C:\Cloud\keepalive.log" `
+                        -Value "[$(Get-Date)] No active console — rebooting"
+      
                       cmd.exe /c "shutdown /r /t 0 /f" 2>$null
+      
                       Start-Sleep -Seconds 120
                   }
-
-                  foreach ($svc in @("AudioSrv","AudioEndpointBuilder")) {
-                      $s = Get-Service -Name$svc -ErrorAction SilentlyContinue
-                      if ($s -and$s.Status -ne "Running") {
-                          Start-Service -Name $svc -ErrorAction SilentlyContinue
+      
+      
+                  # ----------------------------------------------------
+                  # Keep Windows Audio services running
+                  # ----------------------------------------------------
+      
+                  foreach ($svc in @(
+                      "AudioSrv",
+                      "AudioEndpointBuilder"
+                  )) {
+      
+                      $s = Get-Service `
+                        -Name $svc `
+                        -ErrorAction SilentlyContinue
+      
+                      if ($s -and $s.Status -ne "Running") {
+      
+                          Start-Service `
+                            -Name $svc `
+                            -ErrorAction SilentlyContinue
                       }
                   }
-              } catch {
-                  Add-Content -Path "C:\Cloud\keepalive.log" -Value "[$(Get-Date)] EX:$_"
+      
               }
+              catch {
+      
+                  Add-Content `
+                    -Path "C:\Cloud\keepalive.log" `
+                    -Value "[$(Get-Date)] EX: $_"
+              }
+      
               Start-Sleep -Seconds 5
           }
           '@
-
-          $scriptPath = "C:\KeepScreenAlive.ps1"
-          New-Item -ItemType Directory -Path "C:\Cloud" -Force | Out-Null
-          
-          [System.IO.File]::WriteAllText($scriptPath, $scriptContent, [System.Text.UTF8Encoding]::new($false))
-
-          $action     = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File $scriptPath"
-          $trigger    = New-ScheduledTaskTrigger -AtStartup$principal  = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-
-          Register-ScheduledTask -TaskName "KeepScreenAliveTask" -Action $action -Trigger $trigger -Principal$principal -Force
-          Start-ScheduledTask -TaskName "KeepScreenAliveTask"
+      
+          $keepAliveScript |
+            Out-File `
+              -FilePath $keepAliveScriptPath `
+              -Encoding UTF8 `
+              -Force
+      
+          Write-Host "[+] Created KeepAlive PS1: $keepAliveScriptPath" -ForegroundColor Green
+      
+      
+          # ============================================================
+          # 5. CREATE KEEP-ALIVE TASK
+          #    RUNS AT WINDOWS STARTUP
+          #    SYSTEM + HIGHEST PRIVILEGES
+          # ============================================================
+      
+          $keepAliveAction = New-ScheduledTaskAction `
+            -Execute "powershell.exe" `
+            -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$keepAliveScriptPath`""
+      
+          $keepAliveTrigger = New-ScheduledTaskTrigger -AtStartup
+      
+          $keepAlivePrincipal = New-ScheduledTaskPrincipal `
+            -UserId "NT AUTHORITY\SYSTEM" `
+            -LogonType ServiceAccount `
+            -RunLevel Highest
+      
+          Register-ScheduledTask `
+            -TaskName "KeepScreenAliveTask" `
+            -Action $keepAliveAction `
+            -Trigger $keepAliveTrigger `
+            -Principal $keepAlivePrincipal `
+            -Force
+      
+          Write-Host "[+] KeepScreenAliveTask registered." -ForegroundColor Green
+      
+      
+          # ============================================================
+          # 6. START KEEP-ALIVE TASK NOW
+          # ============================================================
+      
+          Start-ScheduledTask `
+            -TaskName "KeepScreenAliveTask"
+      
+          Write-Host "[+] KeepScreenAliveTask started." -ForegroundColor Green
+      
+      
+          # ============================================================
+          # 7. DISPLAY TASK STATUS
+          # ============================================================
+      
+          Write-Host ""
+          Write-Host "========== TASK STATUS ==========" -ForegroundColor Cyan
+      
+          Get-ScheduledTask `
+            -TaskName "ConfigureZoomFullscreenAtLogin" |
+            Select-Object TaskName, State
+      
+          Get-ScheduledTask `
+            -TaskName "KeepScreenAliveTask" |
+            Select-Object TaskName, State
+      
+          Write-Host ""
+          Write-Host "[+] All configuration completed." -ForegroundColor Green
 
       - name: Install & Connect Tailscale
         run: |
