@@ -18,43 +18,23 @@ on:
 jobs:
   RDP:
     runs-on: ubuntu-latest
-    timeout-minutes: 355
+    timeout-minutes: 250
 
     steps:
-      - name: Install Dependencies
+      - name: Add Tailscale Repository & Install Dependencies
         run: |
-          set -e
+          # 1. Add Tailscale GPG Key & Repo
           curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
           curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.list | sudo tee /etc/apt/sources.list.d/tailscale.list
+
+          # 2. Install Tailscale, Xvfb, FreeRDP, and PulseAudio dependencies
           sudo apt-get update
-
-          # Core tools
-          sudo apt-get install -y \
-            tailscale xvfb xdotool openbox x11-utils netcat-openbsd \
-            alsa-utils libasound2-plugins
-
-          # Try freerdp2 first (provides /usr/bin/xfreerdp), fallback to freerdp3 (provides /usr/bin/xfreerdp3)
-          if sudo apt-get install -y freerdp2-x11 2>/dev/null; then
-            echo "Installed freerdp2-x11"
-          else
-            sudo apt-get install -y freerdp3-x11
-            echo "Installed freerdp3-x11"
-          fi
-
-          # Detect which binary we actually have
-          if command -v xfreerdp >/dev/null 2>&1; then
-            echo "RDP_BIN=xfreerdp" >> $GITHUB_ENV
-          elif command -v xfreerdp3 >/dev/null 2>&1; then
-            echo "RDP_BIN=xfreerdp3" >> $GITHUB_ENV
-          else
-            echo "::error::No xfreerdp binary found"
-            exit 1
-          fi
-
+          sudo apt-get install -y tailscale xvfb freerdp2-x11 pulseaudio alsa-utils libasound2-plugins
+          
       - name: Authenticate Tailscale
         run: |
           sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} \
-                            --hostname=linux-rdp-bridge-${{ github.run_id }} \
+                            --hostname=rdp-bridge-${{ github.run_id }} \
                             --accept-routes
           sleep 3
           tailscale status || true
@@ -78,86 +58,40 @@ jobs:
           echo "::add-mask::$TARGET_USER"
           echo "Resolved target: $TARGET_IP"
 
-      - name: Wait for host
+      - name: Run Persistent RDP Session inside XVFB
         run: |
-          echo "Waiting for $TARGET_IP ..."
-          for i in $(seq 1 40); do
-            if ping -c 1 -W 2 "$TARGET_IP" >/dev/null 2>&1 && nc -z -w 2 "$TARGET_IP" 3389 2>/dev/null; then
-              echo "TCP 3389 open on attempt $i"
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "::error::Host $TARGET_IP:3389 not reachable"
-          exit 1
+          echo "Connecting headless RDP session to $TARGET_IP..."
 
-      - name: Run RDP Session (single, end on disconnect)
-        run: |
-          set +e
-
-          # 1. Virtual display
-          Xvfb :99 -screen 0 1920x1080x24 -ac +extension RANDR &
-          XVFB_PID=$!
+          # 1. Start Virtual X Server
+          Xvfb :99 -screen 0 1920x1080x24 &
           export DISPLAY=:99
-          sleep 3
-
-          if ! xdpyinfo -display :99 >/dev/null 2>&1; then
-            echo "::error::Xvfb failed to start"
-            exit 1
-          fi
-
-          # 2. Window manager
-          openbox --sm-disable &
-          WM_PID=$!
           sleep 2
 
-          # 3. Keep-alive (focus + mouse jiggle) so the session never idles out
-          (
-            while true; do
-              sleep 20
-              WIN=$(xdotool search --class "freerdp" 2>/dev/null | head -1)
-              if [ -n "$WIN" ]; then
-                xdotool windowactivate --sync "$WIN" >/dev/null 2>&1
-                xdotool windowfocus   --sync "$WIN" >/dev/null 2>&1
-              fi
-              xdotool mousemove_relative --  1 0 >/dev/null 2>&1
-              xdotool mousemove_relative -- -1 0 >/dev/null 2>&1
-              xdotool key --clearmodifiers F15 >/dev/null 2>&1
-            done
-          ) &
-          KEEP_PID=$!
+          # 2. Start Virtual PulseAudio Daemon for Sound Handling
+          pulseaudio --start --exit-idle-time=-1
+          sleep 1
 
-          cleanup() {
-            echo "[$(date)] Cleaning up..."
-            kill $KEEP_PID $WM_PID $XVFB_PID >/dev/null 2>&1
-          }
-          trap cleanup EXIT
+          # 3. Launch FreeRDP session with sound redirection
+          xfreerdp /v:"$TARGET_IP" \
+                   /u:"$TARGET_USER" \
+                   /p:"$TARGET_PASS" \
+                   /size:1920x1080 \
+                   /cert-ignore \
+                   /cert:ignore \
+                   /gfx \
+                   /network:auto \
+                   /sound:sys:pulse &
 
-          echo "=========================================="
-          echo "[$(date)] Bridge starting -> $TARGET_IP"
-          echo "Binary : $RDP_BIN"
-          echo "Audio  : /audio-mode:2 (play on remote server)"
-          echo "Single session — job ends when RDP disconnects."
-          echo "=========================================="
+          RDP_PID=$!
+          echo "RDP Client running under PID: $RDP_PID"
 
-          # 4. SINGLE RDP SESSION — no reconnect loop
-          "$RDP_BIN" \
-            /v:"$TARGET_IP" \
-            /u:"$TARGET_USER" \
-            /p:"$TARGET_PASS" \
-            /size:1920x1080 \
-            /bpp:32 \
-            /cert-ignore \
-            +clipboard \
-            /network:LAN \
-            /audio-mode:2 \
-            /log-level:INFO \
-            +async-update \
-            +fonts
+          # Give process a moment to establish connection
+          sleep 5
 
-          RC=$?
-          echo "[$(date)] xfreerdp exited with code $RC"
-          echo "[$(date)] RDP session closed — ending bridge job."
+          # 4. Monitor loop: Keep active as long as RDP session remains alive
+          while kill -0 $RDP_PID 2>/dev/null; do
+            echo "[$(date)] Linux Bridge actively maintaining GUI & Audio session on $TARGET_IP..."
+            sleep 15
+          done
 
-          # Force job to finish now (cleanup runs via trap)
-          exit 0
+          echo "RDP connection closed or overridden. Terminating action cleanly."
