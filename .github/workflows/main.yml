@@ -225,7 +225,7 @@ jobs:
         run: |
           winget source update
           winget install --id OBSProject.OBSStudio   --exact --source winget --accept-source-agreements --accept-package-agreements
-          winget install --id Zoom.Zoom              -e      --source winget --accept-source-agreements --accept-package-agreements
+          # winget install --id Zoom.Zoom              -e      --source winget --accept-source-agreements --accept-package-agreements
           winget install --id AutoHotkey.AutoHotkey  --exact --source winget --accept-source-agreements --accept-package-agreements
 
           python -m pip install --upgrade pip
@@ -235,7 +235,7 @@ jobs:
         shell: pwsh
         env:
           OBS_JSON_URL: ${{ secrets.OBS_JSON_URL }}
-          OBS_TIME:     ${{ secrets.OBS_TIME }}
+          CORE_TIME:     ${{ secrets.CORE_TIME }}
         run: |
           $ErrorActionPreference = 'Continue'
           $rdpUser = "Cloud PC"
@@ -401,7 +401,7 @@ jobs:
               -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$moverPath`"" `
               -WorkingDirectory "C:\Cloud"
           
-          $trigger = New-ScheduledTaskTrigger -Daily -At $env:OBS_TIME
+          $trigger = New-ScheduledTaskTrigger -Daily -At $env:CORE_TIME
           
           $principal = New-ScheduledTaskPrincipal `
               -UserId $rdpUser `
@@ -424,7 +424,7 @@ jobs:
               -Settings $settings `
               -Force | Out-Null
           
-          Write-Host "Successfully registered OBSMover task at $env:OBS_TIME (daily)."
+          Write-Host "Successfully registered OBSMover task at $env:CORE_TIME (daily)."
           
           $task = Get-ScheduledTask -TaskName "OBSMover" -ErrorAction SilentlyContinue
           
@@ -442,7 +442,7 @@ jobs:
           }
           
           Write-Host "OBS config staged at: $stageRoot"
-          Write-Host "OBSMover will move files daily at $env:OBS_TIME."
+          Write-Host "OBSMover will move files daily at $env:CORE_TIME."
           
           $global:LASTEXITCODE = 0
           exit 0
@@ -452,7 +452,7 @@ jobs:
           LOGIN_URL:    ${{ secrets.LOGIN_URL }}
           LOGIN_TIME:   ${{ secrets.LOGIN_TIME }}
           OBS_URL:      ${{ secrets.OBS_URL }}
-          OBS_TIME:     ${{ secrets.OBS_TIME }}
+          CORE_TIME:     ${{ secrets.CORE_TIME }}
           AHK_URL:      ${{ secrets.AHK_URL }}
           AHK_TIME:     ${{ secrets.AHK_TIME }}
           UPLOAD_URL:   ${{ secrets.UPLOAD_URL }}
