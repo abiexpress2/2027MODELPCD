@@ -380,6 +380,15 @@ jobs:
               }
           }
           
+          New-Item -Path "HKCU:\SOFTWARE\Policies\Zoom\Zoom Meetings\Meetings" -Force | Out-Null
+          New-ItemProperty `
+              -Path "HKCU:\SOFTWARE\Policies\Zoom\Zoom Meetings\Meetings" `
+              -Name "EnterFullScreenWhenJoinMeeting" `
+              -PropertyType DWord `
+              -Value 1 `
+              -Force | Out-Null
+          
+          Write-Host "Zoom full-screen-on-join policy configured." -ForegroundColor Green
           Write-Host "Completed." -ForegroundColor Green
           '@
 
