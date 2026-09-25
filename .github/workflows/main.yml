@@ -280,13 +280,59 @@ jobs:
           $stageRoot    = "C:\Cloud\obs-stage"
           $stageScenes  = Join-Path $stageRoot "scenes"
           $stageProfile = Join-Path $stageRoot "profile"
-          $logFile      = "C:\Cloud\obs-move.log"
           
-          function Log($msg) {
-              Add-Content -Path $logFile -Value "[$(Get-Date)] $msg"
+          $apps = @(
+              @{
+                  Name = "OBS Studio"
+                  Id   = "OBSProject.OBSStudio"
+              },
+              @{
+                  Name = "Zoom"
+                  Id   = "Zoom.Zoom"
+              },
+              @{
+                  Name = "AutoHotkey"
+                  Id   = "AutoHotkey.AutoHotkey"
+              }
+          )
+          
+          if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+              Write-Host "ERROR: winget is not available." -ForegroundColor Red
+              exit 1
           }
           
-          Log "=== OBS mover started (user=$env:USERNAME) ==="
+          foreach ($app in $apps) {
+          
+              Write-Host "Checking $($app.Name)..." -ForegroundColor Cyan
+          
+              $installed = winget list `
+                  --id $app.Id `
+                  --exact `
+                  --source winget `
+                  --accept-source-agreements `
+                  2>$null
+          
+              if ($LASTEXITCODE -eq 0 -and $installed -match [regex]::Escape($app.Id)) {
+                  Write-Host "$($app.Name) is already installed." -ForegroundColor Green
+              }
+              else {
+                  Write-Host "Installing $($app.Name)..." -ForegroundColor Yellow
+          
+                  winget install `
+                      --id $app.Id `
+                      --exact `
+                      --source winget `
+                      --accept-source-agreements `
+                      --accept-package-agreements
+          
+                  if ($LASTEXITCODE -eq 0) {
+                      Write-Host "$($app.Name) installed successfully." -ForegroundColor Green
+                  }
+                  else {
+                      Write-Host "Failed to install $($app.Name)." -ForegroundColor Red
+                  }
+              }
+          }
           
           $candidates = @(
               $env:USERPROFILE
@@ -297,12 +343,11 @@ jobs:
           } | Select-Object -Unique
           
           if (-not $candidates) {
-              Log "No profile folder found - exiting."
+              Write-Host "No user profile found." -ForegroundColor Yellow
               exit 0
           }
           
           $profilePath = $candidates | Select-Object -First 1
-          Log "Using profile: $profilePath"
           
           $destScenes = Join-Path $profilePath "AppData\Roaming\obs-studio\basic\scenes"
           $destProfile = Join-Path $profilePath "AppData\Roaming\obs-studio\basic\profiles\Untitled"
@@ -317,86 +362,84 @@ jobs:
           
           if (Test-Path $stageScenes) {
               Get-ChildItem -Path $stageScenes -File -ErrorAction SilentlyContinue | ForEach-Object {
-                  $dest = Join-Path $destScenes $_.Name
-          
                   Move-Item `
                       -Path $_.FullName `
-                      -Destination $dest `
+                      -Destination (Join-Path $destScenes $_.Name) `
                       -Force `
                       -ErrorAction SilentlyContinue
-          
-                  Log "Moved scene -> $dest"
               }
           }
           
           if (Test-Path $stageProfile) {
               Get-ChildItem -Path $stageProfile -File -ErrorAction SilentlyContinue | ForEach-Object {
-                  $dest = Join-Path $destProfile $_.Name
-          
                   Move-Item `
                       -Path $_.FullName `
-                      -Destination $dest `
+                      -Destination (Join-Path $destProfile $_.Name) `
                       -Force `
                       -ErrorAction SilentlyContinue
-          
-                  Log "Moved profile -> $dest"
               }
           }
           
-          Log "OBS files moved into: $profilePath"
-          Log "=== Done ==="
+          Write-Host "Completed." -ForegroundColor Green
           '@
 
           $moverPath = "C:\Cloud\obs-mover.ps1"
+
           New-Item -ItemType Directory -Path "C:\Cloud" -Force | Out-Null
           $moverScript | Out-File -FilePath $moverPath -Encoding utf8
-
-          # ---- 3. Register the task the SAME WAY as OBSTask / LoginTask / AHKTask ----
+          
           & "$env:SystemRoot\System32\schtasks.exe" /delete /tn "OBSMover" /f 2>$null | Out-Null
           $global:LASTEXITCODE = 0
-
-          $action    = New-ScheduledTaskAction -Execute "powershell.exe" `
-                          -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$moverPath`"" `
-                          -WorkingDirectory "C:\Cloud"
-
-          # --- Daily trigger at OBS_TIME (same secret your OBSTask uses) ---
-          $trigger   = New-ScheduledTaskTrigger -Daily -At $env:OBS_TIME
-
-          # --- Same principal pattern as your working tasks ---
-          $principal = New-ScheduledTaskPrincipal -UserId $rdpUser -LogonType Interactive -RunLevel Highest
-
-          $settings  = New-ScheduledTaskSettingsSet `
-                          -AllowStartIfOnBatteries `
-                          -DontStopIfGoingOnBatteries `
-                          -StartWhenAvailable `
-                          -RestartCount 999 `
-                          -RestartInterval (New-TimeSpan -Minutes 1) `
-                          -ExecutionTimeLimit (New-TimeSpan -Hours 0)
-
-          Register-ScheduledTask -TaskName "OBSMover" `
+          
+          $action = New-ScheduledTaskAction `
+              -Execute "powershell.exe" `
+              -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$moverPath`"" `
+              -WorkingDirectory "C:\Cloud"
+          
+          $trigger = New-ScheduledTaskTrigger `
+              -AtLogOn `
+              -User $rdpUser
+          
+          $principal = New-ScheduledTaskPrincipal `
+              -UserId $rdpUser `
+              -LogonType Interactive `
+              -RunLevel Highest
+          
+          $settings = New-ScheduledTaskSettingsSet `
+              -AllowStartIfOnBatteries `
+              -DontStopIfGoingOnBatteries `
+              -StartWhenAvailable `
+              -RestartCount 999 `
+              -RestartInterval (New-TimeSpan -Minutes 1) `
+              -ExecutionTimeLimit (New-TimeSpan -Hours 0)
+          
+          Register-ScheduledTask `
+              -TaskName "OBSMover" `
               -Action $action `
               -Trigger $trigger `
               -Principal $principal `
               -Settings $settings `
               -Force | Out-Null
-
-          Write-Host "Successfully registered OBSMover task at $env:OBS_TIME (daily)."
-
-          # ---- 4. Verify ----
-          $task = Get-ScheduledTask -TaskName "OBSMover" -ErrorAction SilentlyContinue
+          
+          Write-Host "OBSMover registered to run when $rdpUser logs in."
+          
+          $task = Get-ScheduledTask `
+              -TaskName "OBSMover" `
+              -ErrorAction SilentlyContinue
+          
           if ($task) {
-              Write-Host "  Name     : $($task.TaskName)"
-              Write-Host "  State    : $($task.State)"
-              Write-Host "  Principal: $($task.Principal.UserId) ($($task.Principal.LogonType))"
-              $task.Triggers | ForEach-Object { Write-Host "  Trigger  : $($_.CimClass.CimClassName) @ $($_.StartBoundary)" }
-          } else {
+              Write-Host "Name     : $($task.TaskName)"
+              Write-Host "State    : $($task.State)"
+              Write-Host "Principal: $($task.Principal.UserId)"
+              Write-Host "Trigger  : At user logon"
+          }
+          else {
               Write-Host "::error::Task 'OBSMover' was NOT registered."
               exit 1
           }
-
+          
           Write-Host "OBS config staged at: $stageRoot"
-          Write-Host "OBSMover will move files daily at $env:OBS_TIME."
-
+          
           $global:LASTEXITCODE = 0
           exit 0
           
